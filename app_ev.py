@@ -1887,8 +1887,9 @@ def genera_soluzioni_confronto(
     else:
         pool_primario = all_ch
 
-    e_filtro_tesla = (rete_codice == "tesla") or bool(operatore_keywords and "tesla" in operatore_keywords)
-    extra_ads = solo_ads if (consenti_rabbocco_ads and e_filtro_tesla) else []
+    # Rabbocco veloce <= 8 min in Autostrada valido per qualsiasi operatore scelto (Tesla, Ionity, Ewiva, ecc.)
+    e_filtro_operatore = (rete_codice in ("tesla", "operatore")) or bool(operatore_keywords)
+    extra_ads = solo_ads if (consenti_rabbocco_ads and e_filtro_operatore) else []
 
     avviso_copertura_op = None
     op_kw_attivo_su_a = operatore_keywords
@@ -1957,8 +1958,8 @@ def genera_soluzioni_confronto(
             sol_b["consenti_rabbocco_ads"] = False
             desc_b = "Alternativa — Solo Autostrada (zero caselli)"
 
-    # Se la rete scelta è Solo Autostrada o Solo Tesla e A fallisce, offre comunque B su tutte le colonnine
-    if not sol_a["valido"] and rete_codice in ("ads", "tesla"):
+    # Se la rete scelta è Solo Autostrada o Solo Operatore/Tesla e A fallisce, offre comunque B su tutte le colonnine
+    if not sol_a["valido"] and rete_codice in ("ads", "tesla", "operatore"):
         cand_tutte = _sim(all_ch)
         if cand_tutte["valido"]:
             sol_b = cand_tutte
@@ -2225,9 +2226,9 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         else:
             max_reach = min(max_km_5, tot_km - 1.0)
 
-        # Includi eventuali AdS per rabbocco veloce se l'opzione è attiva in modalità Tesla
+        # Includi eventuali AdS per rabbocco veloce se l'opzione è attiva con Solo Tesla o operatore preferito
         pool_corrente = list(pool_compatibile)
-        if pool_rete == "tesla" and consenti_rabbocco:
+        if (pool_rete in ("tesla", "operatore") or bool(op_kw_sol)) and consenti_rabbocco:
             chiavi_esistenti = {(c["Km"], c["Stazione"]) for c in pool_corrente}
             for c in all_ch:
                 if c["in_ads"] and (c["Km"], c["Stazione"]) not in chiavi_esistenti:
@@ -3347,16 +3348,36 @@ with tab_viaggio:
                 )
             nome_operatore, operatore_keywords = estrai_info_operatore(scelta_operatore, operatore_custom)
 
-            rete_label = st.radio(
+            # Terza voce dinamica universale: "Solo Tesla Supercharger" se Tutti gli operatori,
+            # altrimenti "Solo {nome_operatore} (anche fuori casello)"
+            etichetta_opz3 = (
+                f"🎯 Solo {nome_operatore} (anche fuori casello)"
+                if nome_operatore
+                else "🔴 Solo Tesla Supercharger"
+            )
+            mappa_etichette_rete = {
+                "tutte": "⚡ Tutte le colonnine veloci (Precedenza Autostrada)",
+                "ads": "🛣️ Solo in Autostrada (Aree di Servizio / Autogrill)",
+                "operatore": etichetta_opz3,
+            }
+            if st.session_state.get("rad_rete") not in mappa_etichette_rete:
+                st.session_state.pop("rad_rete", None)
+
+            rete_scelta_cod = st.radio(
                 "Circuito / Rete di ricarica preferita",
-                list(RETI_PREFERITE.keys()),
+                options=["tutte", "ads", "operatore"],
+                format_func=lambda c, m=mappa_etichette_rete: m[c],
                 index=0,
                 key="rad_rete",
             )
-            rete_codice = RETI_PREFERITE[rete_label]
+            if rete_scelta_cod == "operatore":
+                rete_codice = "operatore" if nome_operatore else "tesla"
+            else:
+                rete_codice = rete_scelta_cod
 
+            # Checkbox rabbocco veloce <= 8 min in Autostrada valida per Tesla e qualsiasi operatore scelto
             consenti_rabbocco_ads = False
-            if rete_codice == "tesla" or scelta_operatore == "🔴 Tesla Supercharger":
+            if rete_scelta_cod == "operatore" or (rete_scelta_cod != "ads" and bool(operatore_keywords)):
                 consenti_rabbocco_ads = st.checkbox(
                     "⚡ Consenti rabbocco veloce (<= 8 min) in Autostrada senza uscire dal casello",
                     key="chk_rabbocco_ads",
@@ -3397,7 +3418,7 @@ with tab_viaggio:
                         dest_ch = cerca_colonnine_zona(db, g2[0], g2[1], raggio_km=raggio_corrente)
                         colonnina_vicina_dest = dest_ch[0] if dest_ch else trova_colonnina_piu_vicina(db, g2[0], g2[1])
 
-                        rete_no_auto = "tesla" if rete_codice == "tesla" else "tutte"
+                        rete_no_auto = rete_codice if rete_codice in ("tesla", "operatore") else "tutte"
 
                         if strada_codice == "confronta":
                             # Calcola entrambi i percorsi: standard (Autostrada) e alternativa Statali/Extraurbano
