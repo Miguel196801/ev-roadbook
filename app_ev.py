@@ -6,6 +6,7 @@ curve di ricarica DC reali, filtri rete/Autogrill/Supercharger e garanzia energe
 su Arrivo (B) e Rientro a Casa (A).
 """
 
+import base64
 from datetime import date, datetime, time
 import hmac
 import html
@@ -13,7 +14,9 @@ import json
 import math
 import os
 import re
+import struct
 from urllib.parse import quote_plus
+import zlib
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
@@ -26,10 +29,119 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 
+def _crea_chunk_png(tipo_chunk, dati):
+    """Costruisce un chunk PNG standard (lunghezza + tipo + dati + CRC32)."""
+    crc = zlib.crc32(tipo_chunk + dati) & 0xFFFFFFFF
+    return struct.pack(">I", len(dati)) + tipo_chunk + dati + struct.pack(">I", crc)
+
+
+def _punto_in_poligono_2d(px, py, poligono):
+    """Test ray-casting veloce per verificare se (px, py) è interno al poligono."""
+    dentro = False
+    n = len(poligono)
+    x_prev, y_prev = poligono[n - 1]
+    for x_curr, y_curr in poligono:
+        if (y_curr > py) != (y_prev > py):
+            x_int = (x_prev - x_curr) * (py - y_curr) / (y_prev - y_curr) + x_curr
+            if px < x_int:
+                dentro = not dentro
+        x_prev, y_prev = x_curr, y_curr
+    return dentro
+
+
+def genera_icona_app_png_180():
+    """
+    Genera in memoria (solo libreria standard Python zlib/struct) un'icona PNG 180x180
+    per smartphone iOS/Android: sfondo scuro arrotondato (#0E1117 / #1E222D),
+    bordo sottile verde smeraldo (#10B981) e saetta luminosa smeraldo/bianca al centro.
+    Restituisce (png_bytes, png_base64).
+    """
+    w = h = 180
+    cx = cy = 89.5
+    radius = 34.0
+    half_inner = 81.5 - radius
+    # Poligono saetta elettrica centrato in 180x180
+    saetta = (
+        (103.0, 26.0),
+        (46.0, 98.0),
+        (86.0, 98.0),
+        (73.0, 154.0),
+        (134.0, 80.0),
+        (94.0, 80.0),
+    )
+
+    righe = bytearray()
+    for y in range(h):
+        righe.append(0)  # Filter type 0 (None)
+        dy_abs = abs(y - cy)
+        qy = dy_abs - half_inner
+        qy_pos = qy if qy > 0.0 else 0.0
+        # Gradiente verticale sfondo interno (#1E222D -> #131722)
+        t_y = y / 179.0
+        bg_r = 30.0 - 11.0 * t_y
+        bg_g = 34.0 - 11.0 * t_y
+        bg_b = 45.0 - 11.0 * t_y
+        in_y_saetta = 25 <= y <= 155
+        dy_c = y - cy
+
+        for x in range(w):
+            dx_abs = abs(x - cx)
+            qx = dx_abs - half_inner
+            qx_pos = qx if qx > 0.0 else 0.0
+            sd = math.hypot(qx_pos, qy_pos) + min(max(qx, qy), 0.0) - radius
+
+            if sd > 1.0:
+                # Sfondo esterno scuro (#0E1117)
+                r, g, b = 14, 17, 23
+            elif sd >= -3.2:
+                # Bordo sottile verde smeraldo (#10B981) con leggero anti-aliasing sul margine
+                if sd > 0.0:
+                    f = 1.0 - sd
+                    r = int(14 + (16 - 14) * f)
+                    g = int(17 + (185 - 17) * f)
+                    b = int(23 + (129 - 23) * f)
+                else:
+                    r, g, b = 16, 185, 129
+            else:
+                # Interno scuro con morbido bagliore radiale smeraldo al centro
+                dist_c = math.hypot(x - cx, dy_c)
+                if dist_c < 74.0:
+                    glow = (1.0 - dist_c / 74.0) ** 2
+                    r = min(255, int(bg_r + 16.0 * glow))
+                    g = min(255, int(bg_g + 92.0 * glow))
+                    b = min(255, int(bg_b + 66.0 * glow))
+                else:
+                    r, g, b = int(bg_r), int(bg_g), int(bg_b)
+
+                # Saetta elettrica luminosa verde smeraldo / bianca al centro
+                if in_y_saetta and 45 <= x <= 135 and _punto_in_poligono_2d(float(x), float(y), saetta):
+                    # Sfumatura luminosa dal bianco-menta in alto/centro allo smeraldo brillante in basso
+                    f_bolt = max(0.0, min(1.0, (y - 26.0) / 128.0))
+                    r = int(240 - (240 - 34) * f_bolt * 0.72)
+                    g = int(255 - (255 - 211) * f_bolt * 0.45)
+                    b = int(248 - (248 - 153) * f_bolt * 0.65)
+
+            righe.append(r)
+            righe.append(g)
+            righe.append(b)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(righe), level=6)
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n"
+        + _crea_chunk_png(b"IHDR", ihdr)
+        + _crea_chunk_png(b"IDAT", idat)
+        + _crea_chunk_png(b"IEND", b"")
+    )
+    return png_bytes, base64.b64encode(png_bytes).decode("ascii")
+
+
+APP_ICON_PNG_BYTES, APP_ICON_B64 = genera_icona_app_png_180()
+
 # Configurazione pagina (layout centrato ideale per Mobile-First Dark Card UI)
 st.set_page_config(
     page_title="EV Roadbook Italia",
-    page_icon="⚡",
+    page_icon=APP_ICON_PNG_BYTES,
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -67,6 +179,8 @@ AUTO_KIA_ENIRO = "🚙 Kia e-Niro Evolution 2020 (64 kWh)"
 AUTO_TESLA_MY = "🏎️ Tesla Model Y Performance 2023 (75 kWh)"
 AUTO_MAZDA_MX30 = "🚗 Mazda MX-30 Versione Lancio (35.5 kWh)"
 AUTO_BMW_IX40 = "🚙 BMW iX xDrive40 08/2023 (76.6 kWh)"
+AUTO_LEAPMOTOR_B05_STD = "🚗 Leapmotor B05 — 56.2 kWh (Standard)"
+AUTO_LEAPMOTOR_B05_LR = "🚙 Leapmotor B05 — 67.1 kWh (Long Range)"
 AUTO_PERSONALIZZATA = "⚙️ Altra Auto (Personalizzata)"
 
 AUTO_OPZIONI = [
@@ -74,6 +188,8 @@ AUTO_OPZIONI = [
     AUTO_TESLA_MY,
     AUTO_MAZDA_MX30,
     AUTO_BMW_IX40,
+    AUTO_LEAPMOTOR_B05_STD,
+    AUTO_LEAPMOTOR_B05_LR,
     AUTO_PERSONALIZZATA,
 ]
 
@@ -163,6 +279,7 @@ UTENTI_FALLBACK_LOCALE = {
     "Elizabeth": "ev2026",
     "Luciano": "ev2026",
     "Chiara": "ev2026",
+    "Arianna": "ev2026",
 }
 
 
@@ -175,6 +292,8 @@ def opzioni_auto_per_utente(current_user):
         return [AUTO_MAZDA_MX30, AUTO_PERSONALIZZATA]
     if utente_low == "chiara":
         return [AUTO_BMW_IX40, AUTO_PERSONALIZZATA]
+    if utente_low == "arianna":
+        return [AUTO_LEAPMOTOR_B05_STD, AUTO_LEAPMOTOR_B05_LR, AUTO_PERSONALIZZATA]
     return list(AUTO_OPZIONI)
 
 
@@ -204,16 +323,18 @@ def inietta_stile_dark():
     st.markdown(
         """
 <style>
-.stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
     background-color: #131722 !important;
     color: #E6EDF3 !important;
+    overflow-y: auto !important;
+    height: auto !important;
 }
 [data-testid="stHeader"] {
     background-color: #131722 !important;
 }
 .block-container {
     padding-top: 2.5rem !important;
-    padding-bottom: 2.5rem !important;
+    padding-bottom: 4rem !important;
     max-width: 760px !important;
 }
 h1, h2, h3, h4, p, label, span, .stMarkdown {
@@ -352,13 +473,13 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
 #ancora-risultati {
     scroll-margin-top: 2.5rem;
 }
-/* Expander stile dark card */
+/* Expander stile dark card (senza overflow:hidden per non bloccare scroll e tendine su Cloud/mobile) */
 [data-testid="stExpander"] {
     background-color: #1E222D !important;
     border: 1px solid #2A2E39 !important;
     border-radius: 12px !important;
     margin-bottom: 0.85rem !important;
-    overflow: hidden;
+    overflow: visible !important;
 }
 [data-testid="stExpander"] summary {
     font-weight: 700 !important;
@@ -548,6 +669,22 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
     font-weight: 800;
     color: #F8FAFC;
     margin: 0;
+}
+.ev-hero-author {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #34D399;
+    letter-spacing: 0.3px;
+    margin-top: 2px;
+}
+.ev-hero-author-inline {
+    display: inline-block;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: #34D399;
+    letter-spacing: 0.3px;
+    margin-left: 6px;
+    vertical-align: middle;
 }
 .ev-hero-sub {
     font-size: 0.86rem;
@@ -756,6 +893,24 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "bat_kwh": 71.0,
             "cons_base": 21.5,
             "curva_dc": [(45, 150), (80, 105), (100, 55)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Leapmotor B05" in scelta_auto and "56.2" in scelta_auto:
+        return {
+            "nome": "Leapmotor B05 56.2 kWh (Standard)",
+            "bat_kwh": 55.0,
+            "cons_base": 16.5,
+            "curva_dc": [(50, 150), (80, 110), (100, 45)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Leapmotor B05" in scelta_auto and "67.1" in scelta_auto:
+        return {
+            "nome": "Leapmotor B05 67.1 kWh (Long Range)",
+            "bat_kwh": 65.0,
+            "cons_base": 16.8,
+            "curva_dc": [(50, 170), (80, 120), (100, 45)],
             "soc_veloce": 80,
             "is_tesla_car": False,
         }
@@ -2470,7 +2625,7 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
 
 
 def render_banner_verdetto(sol_a, res):
-    """Mostra il verdetto immediato e ben evidente in cima ai risultati prima di Soluzione A / B."""
+    """Mostra il verdetto immediato con riassunto telegrafico Andata/Ritorno in cima ai risultati."""
     if not sol_a or not sol_a.get("valido"):
         st.markdown(
             '<div class="ev-card" style="background:linear-gradient(135deg, #2D1A1E 0%, #1E222D 100%); '
@@ -2482,8 +2637,52 @@ def render_banner_verdetto(sol_a, res):
         )
         return
 
-    n_soste = len(sol_a["soste"])
+    soste_a = sol_a.get("soste", [])
+    n_soste = len(soste_a)
     tempo_tot_txt = formatta_durata(sol_a["tempo_totale_min"])
+    bat_kwh = float(res["auto_cfg"]["bat_kwh"])
+
+    def _riassunto_tratta_telegrafico(soste_tratta, solo_andata=False):
+        if not soste_tratta:
+            return "nessuna sosta (arrivo diretto)" if solo_andata else "nessuna sosta"
+        if len(soste_tratta) == 1:
+            s = soste_tratta[0]
+            kwh_s = max(1, int(round(max(0.0, (float(s["charge_to"]) - float(s["arr_pct"])) / 100.0 * bat_kwh))))
+            min_s = int(s["minuti_ricarica"])
+            nome_s = html.escape(s["Stazione"])
+            return f"1 sosta di ~{min_s} min (+{kwh_s} kWh) presso <strong>{nome_s}</strong>"
+        min_tot = sum(int(s["minuti_ricarica"]) for s in soste_tratta)
+        kwh_tot = max(
+            1,
+            int(
+                round(
+                    sum(
+                        max(0.0, (float(s["charge_to"]) - float(s["arr_pct"])) / 100.0 * bat_kwh)
+                        for s in soste_tratta
+                    )
+                )
+            ),
+        )
+        nomi = ", ".join(html.escape(s["Stazione"]) for s in soste_tratta)
+        return f"{len(soste_tratta)} soste per ~{min_tot} min (+{kwh_tot} kWh) presso <strong>{nomi}</strong>"
+
+    if res["andata_ritorno"]:
+        soste_andata = [s for s in soste_a if not s.get("e_ritorno")]
+        soste_ritorno = [s for s in soste_a if s.get("e_ritorno")]
+        riepilogo_telegrafico = (
+            f'<div style="margin-top:9px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.10); '
+            f'font-size:0.88rem; color:#F1F5F9; line-height:1.55;">'
+            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_andata, solo_andata=False)}</div>'
+            f'<div>⬅️ <strong>Ritorno:</strong> {_riassunto_tratta_telegrafico(soste_ritorno, solo_andata=False)}</div>'
+            f'</div>'
+        )
+    else:
+        riepilogo_telegrafico = (
+            f'<div style="margin-top:9px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.10); '
+            f'font-size:0.88rem; color:#F1F5F9; line-height:1.55;">'
+            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_a, solo_andata=True)}</div>'
+            f'</div>'
+        )
 
     if n_soste == 0:
         dettaglio = f"Tempo totale stimato: {tempo_tot_txt} • Arrivo a {html.escape(res['dest'])} con ~{sol_a['pct_arrivo_b']:.0f}%"
@@ -2494,6 +2693,7 @@ def render_banner_verdetto(sol_a, res):
             f'border-color:rgba(16,185,129,0.5); border-left:5px solid #10B981; padding:16px 18px;">'
             f'<div style="font-size:1.12rem; font-weight:800; color:#34D399;">✅ NESSUNA SOSTA NECESSARIA — Puoi arrivare diretto a destinazione!</div>'
             f'<div class="ev-card-sub" style="margin-top:5px; color:#CBD5E1;">{dettaglio}</div>'
+            f'{riepilogo_telegrafico}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2507,6 +2707,7 @@ def render_banner_verdetto(sol_a, res):
             f'⏱️ Tempo totale stimato: <strong>{tempo_tot_txt}</strong> '
             f'(di cui {sol_a["minuti_ricarica"]} min di ricarica • Soluzione A consigliata)'
             f'</div>'
+            f'{riepilogo_telegrafico}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -3003,10 +3204,58 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
         )
 
 
+def inietta_icona_mobile_head():
+    """Inietta nel <head> i tag apple-touch-icon, icon e meta web-app per iPhone iOS e Android."""
+    icon_data_uri = f"data:image/png;base64,{APP_ICON_B64}"
+    components.html(
+        f"""
+        <script>
+            (function() {{
+                var doc = window.parent.document;
+                var head = doc.head || doc.getElementsByTagName("head")[0];
+                if (!head) return;
+                var dataUri = "{icon_data_uri}";
+
+                function upsertLink(rel, attrs) {{
+                    var sel = 'link[rel="' + rel + '"][data-ev-app-icon="1"]';
+                    var el = head.querySelector(sel);
+                    if (!el) {{
+                        el = doc.createElement("link");
+                        el.setAttribute("rel", rel);
+                        el.setAttribute("data-ev-app-icon", "1");
+                        head.appendChild(el);
+                    }}
+                    Object.keys(attrs).forEach(function(k) {{
+                        el.setAttribute(k, attrs[k]);
+                    }});
+                }}
+
+                function upsertMeta(name, content) {{
+                    var el = head.querySelector('meta[name="' + name + '"]');
+                    if (!el) {{
+                        el = doc.createElement("meta");
+                        el.setAttribute("name", name);
+                        head.appendChild(el);
+                    }}
+                    el.setAttribute("content", content);
+                }}
+
+                upsertLink("apple-touch-icon", {{ sizes: "180x180", href: dataUri }});
+                upsertLink("icon", {{ type: "image/png", sizes: "192x192", href: dataUri }});
+                upsertMeta("apple-mobile-web-app-title", "EV Roadbook");
+                upsertMeta("apple-mobile-web-app-capable", "yes");
+            }})();
+        </script>
+        """,
+        height=0,
+    )
+
+
 # ==============================================================================
 # INTERFACCIA PRINCIPALE
 # ==============================================================================
 inietta_stile_dark()
+inietta_icona_mobile_head()
 
 # Schermata di Login sicura all'apertura (st.secrets["users"] con fallback solo locale)
 if not st.session_state.get("auth_user"):
@@ -3014,6 +3263,7 @@ if not st.session_state.get("auth_user"):
     st.markdown(
         '<div class="ev-hero">'
         '<div class="ev-hero-title">⚡ EV Roadbook Italia</div>'
+        '<div class="ev-hero-author">by Fabio Tod</div>'
         '<div class="ev-hero-sub">Accesso riservato • Pianificazione guidata Mobile-First</div>'
         '</div>',
         unsafe_allow_html=True,
@@ -3091,7 +3341,7 @@ current_user = st.session_state["auth_user"]
 if not st.session_state.get("operatore_configurato", False):
     st.markdown(
         '<div class="ev-hero">'
-        '<div class="ev-hero-title">⚡ EV Roadbook Italia</div>'
+        '<div class="ev-hero-title">⚡ EV Roadbook Italia <span class="ev-hero-author-inline">by Fabio Tod</span></div>'
         '<div class="ev-hero-sub">Configurazione rapida iniziale • Pianificazione guidata Mobile-First</div>'
         '</div>',
         unsafe_allow_html=True,
@@ -3200,7 +3450,7 @@ if "sync_zona_dest" in st.session_state:
 
 st.markdown(
     f'<div class="ev-hero">'
-    f'<div class="ev-hero-title">⚡ EV Roadbook Italia</div>'
+    f'<div class="ev-hero-title">⚡ EV Roadbook Italia <span class="ev-hero-author-inline">by Fabio Tod</span></div>'
     f'<div class="ev-hero-sub">Ciao {html.escape(current_user)}, buon viaggio! 😎🚗⚡ • Pianificazione guidata Mobile-First</div>'
     f'</div>',
     unsafe_allow_html=True,
@@ -3702,9 +3952,9 @@ with tab_viaggio:
                             "stazioni": dest_ch,
                         }
 
-                        # Chiude automaticamente il pannello parametri e scorre esattamente su "Risultati del Viaggio"
+                        # Chiude automaticamente il pannello parametri e attiva lo scroll one-shot sui risultati
                         st.session_state["cfg_expanded"] = False
-                        st.session_state["scroll_risultati"] = True
+                        st.session_state["trigger_scroll"] = True
                         st.rerun()
                 except Exception as ex:
                     st.error(f"Errore durante il calcolo del viaggio: {ex}")
@@ -3719,16 +3969,25 @@ with tab_viaggio:
 
         st.markdown('<div id="ancora-risultati"></div>', unsafe_allow_html=True)
         st.markdown("### 🏁 Risultati del Viaggio")
-        if st.session_state.pop("scroll_risultati", False):
+        if st.session_state.get("trigger_scroll"):
+            st.session_state["trigger_scroll"] = False
+            _scroll_calc_id = res.get("calc_id", 0)
             components.html(
-                """
+                f"""
                 <script>
-                    setTimeout(function() {
-                        var el = window.parent.document.getElementById("ancora-risultati");
-                        if (el) {
-                            el.scrollIntoView({behavior: "smooth", block: "start"});
-                        }
-                    }, 150);
+                    (function() {{
+                        var key = "ev_scrolled_{_scroll_calc_id}";
+                        try {{
+                            if (window.parent.sessionStorage.getItem(key)) return;
+                            window.parent.sessionStorage.setItem(key, "1");
+                        }} catch (e) {{}}
+                        setTimeout(function() {{
+                            var el = window.parent.document.getElementById("ancora-risultati");
+                            if (el) {{
+                                el.scrollIntoView({{behavior: "smooth", block: "start"}});
+                            }}
+                        }}, 150);
+                    }})();
                 </script>
                 """,
                 height=0,
