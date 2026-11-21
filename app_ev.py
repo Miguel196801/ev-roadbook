@@ -136,12 +136,22 @@ def genera_icona_app_png_180():
     return png_bytes, base64.b64encode(png_bytes).decode("ascii")
 
 
-APP_ICON_PNG_BYTES, APP_ICON_B64 = genera_icona_app_png_180()
+def carica_icona_app_b64():
+    """Legge logo.png dalla cartella dell'app (o la genera in memoria come fallback) in Base64."""
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+    if os.path.exists(logo_path):
+        with open(logo_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("ascii")
+    _, icon_b64 = genera_icona_app_png_180()
+    return icon_b64
+
+
+APP_ICON_B64 = carica_icona_app_b64()
 
 # Configurazione pagina (layout centrato ideale per Mobile-First Dark Card UI)
 st.set_page_config(
     page_title="EV Roadbook Italia",
-    page_icon=APP_ICON_PNG_BYTES,
+    page_icon="logo.png",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
