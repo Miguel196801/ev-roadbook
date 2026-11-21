@@ -162,7 +162,7 @@ UTENTI_FALLBACK_LOCALE = {
     "Alessia": "ev2026",
     "Elizabeth": "ev2026",
     "Luciano": "ev2026",
-    "Andrea": "ev2026",
+    "Chiara": "ev2026",
 }
 
 
@@ -173,7 +173,7 @@ def opzioni_auto_per_utente(current_user):
         return [AUTO_KIA_ENIRO, AUTO_TESLA_MY, AUTO_PERSONALIZZATA]
     if utente_low == "luciano":
         return [AUTO_MAZDA_MX30, AUTO_PERSONALIZZATA]
-    if utente_low == "andrea":
+    if utente_low == "chiara":
         return [AUTO_BMW_IX40, AUTO_PERSONALIZZATA]
     return list(AUTO_OPZIONI)
 
@@ -1325,10 +1325,11 @@ def match_operatore_kw(stazione, keywords):
     return any(kw in nome_low for kw in keywords)
 
 
-def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct):
+def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct, km_fine_tratta=None):
     """
     Cerca la colonnina di riserva Piano B (Jolly) successiva entro la riserva residua
-    fino al 4% minimo di emergenza.
+    fino al 4% minimo di emergenza, rimanendo rigorosamente entro la tratta corrente
+    (<= km_fine_tratta e stessa direzione/tratta, senza mai sconfinare oltre l'arrivo o nel ritorno).
     Dà sempre precedenza alle Aree di Servizio in Autostrada (priority == 1 / in_ads)
     rispetto alle colonnine fuori casello; usa una colonnina fuori casello SOLO se
     nessuna AdS autostradale è raggiungibile entro la riserva residua.
@@ -1336,11 +1337,19 @@ def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct):
     margine_km = max(0.0, (arr_pct - SOGLIA_EMERGENZA_JOLLY) * km_per_pct)
     if margine_km <= 0.5:
         return None
-    km_s = stazione["Km"]
+    km_s = float(stazione["Km"])
+    limite_sup_km = km_s + margine_km
+    if km_fine_tratta is not None:
+        limite_sup_km = min(limite_sup_km, float(km_fine_tratta))
+    if limite_sup_km <= km_s + 0.5:
+        return None
+
+    tratta_corr = stazione.get("Tratta")
     candidati = [
         cand for cand in pool_jolly
-        if (km_s + 0.5 < cand["Km"] <= km_s + margine_km)
-        and (cand["Km"], cand["Stazione"]) != (km_s, stazione["Stazione"])
+        if (km_s + 0.5 < float(cand["Km"]) <= limite_sup_km)
+        and (cand["Km"], cand["Stazione"]) != (stazione["Km"], stazione["Stazione"])
+        and (not tratta_corr or cand.get("Tratta") == tratta_corr)
     ]
     if not candidati:
         return None
@@ -1486,8 +1495,12 @@ def simula_piano_viaggio(
     max_soste = 10
 
     def trova_jolly(stazione, arr_pct):
-        """Cerca una colonnina successiva (Jolly / Piano B) dando precedenza alle AdS in Autostrada."""
-        return trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct)
+        """Cerca una colonnina successiva (Jolly / Piano B) entro la tratta corrente con precedenza alle AdS."""
+        e_andata_ar = andata_ritorno and (
+            "Ritorno" not in str(stazione.get("Tratta", "")) and float(stazione["Km"]) <= float(km1) + 0.05
+        )
+        km_limite = float(km1) if e_andata_ar else float(tot_km)
+        return trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct, km_fine_tratta=km_limite)
 
     def calcola_target_sosta(stazione, arr_pct):
         """
@@ -2286,8 +2299,15 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         cambiata_dall_utente = scelto_id != def_key
         arr_pct = curr_pct - (st_scelta["Km"] - curr_km) / km_per_pct
 
-        # Calcola il Jolly (Piano B entro il 4% d'emergenza) con precedenza alle AdS in Autostrada
-        jolly_dyn = trova_jolly_stazione(st_scelta, arr_pct, all_ch, km_per_pct)
+        # Calcola il Jolly (Piano B entro il 4% d'emergenza) rigorosamente entro la tratta corrente
+        km_limite_jolly = float(km1) if (andata_ritorno and not e_sosta_ritorno) else float(tot_km)
+        jolly_dyn = trova_jolly_stazione(
+            st_scelta,
+            arr_pct,
+            all_ch,
+            km_per_pct,
+            km_fine_tratta=km_limite_jolly,
+        )
 
         # Ricalcola carica necessaria, minuti e avvisi rispettando il tetto rigido dell'80%
         if (not cambiata_dall_utente) and abs(arr_pct - def_s["arr_pct"]) < 0.6:
@@ -2295,7 +2315,6 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
             min_ric = int(def_s["minuti_ricarica"])
             avviso_dyn = def_s.get("avviso")
             nota_dyn = def_s.get("nota_extra")
-            jolly_dyn = def_s.get("jolly") or jolly_dyn
         else:
             tetto_eccezione = 95
             next_ch_dyn = [c for c in pool_corrente if st_scelta["Km"] + 3.0 < c["Km"] < tot_km - 1.0]
@@ -2535,7 +2554,6 @@ def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, colore_bordo="#10
             f'</div>'
         )
 
-    riga_jolly = ""
     jolly = sosta.get("jolly")
     if jolly:
         j_nome = html.escape(jolly["Stazione"])
@@ -2550,6 +2568,13 @@ def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, colore_bordo="#10
             f'<span class="ev-k">🛟 Piano B (Jolly)</span>'
             f'<span class="ev-v" style="color:#93C5FD;">{j_dettaglio}</span>'
             f'</div>'
+        )
+    else:
+        riga_jolly = (
+            '<div class="ev-kv">'
+            '<span class="ev-k">🛟 Piano B (Jolly)</span>'
+            '<span class="ev-v" style="color:#94A3B8;">Nessuna AdS prima dell\'arrivo (usa ricarica a destinazione)</span>'
+            '</div>'
         )
 
     extra_html = ""
@@ -2948,24 +2973,31 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
             _render_sosta_con_selettore(idx_g, sosta)
         render_card_arrivo_destinazione(sol, res, colore_bordo=colore_bordo)
 
-    # Pulsante/i per aprire l'intero itinerario multi-tappa su Google Maps (con tutte le soste)
+    # Pulsante/i per aprire l'intero itinerario su Google Maps (etichetta dinamica con soste vs diretto)
     if res["andata_ritorno"]:
         soste_andata = [s for s in soste_sol if not s.get("e_ritorno")]
         soste_ritorno = [s for s in soste_sol if s.get("e_ritorno")]
         url_andata = html.escape(url_gmaps_viaggio_multi_tappa(res["orig"], res["dest"], soste_andata), quote=True)
         url_ritorno = html.escape(url_gmaps_viaggio_multi_tappa(res["dest"], res["orig"], soste_ritorno), quote=True)
+        lbl_andata = "🗺️ Apri Andata su Maps (con soste)" if soste_andata else "🗺️ Apri Andata su Maps (diretto)"
+        lbl_ritorno = "🗺️ Apri Ritorno su Maps (con soste)" if soste_ritorno else "🗺️ Apri Ritorno su Maps (diretto)"
         st.markdown(
             f'<div class="ev-dir-grid">'
-            f'<a class="ev-gmaps-cta" href="{url_andata}" target="_blank" rel="noopener noreferrer">🗺️ Apri Andata su Maps (con soste)</a>'
-            f'<a class="ev-gmaps-cta" href="{url_ritorno}" target="_blank" rel="noopener noreferrer">🗺️ Apri Ritorno su Maps (con soste)</a>'
+            f'<a class="ev-gmaps-cta" href="{url_andata}" target="_blank" rel="noopener noreferrer">{lbl_andata}</a>'
+            f'<a class="ev-gmaps-cta" href="{url_ritorno}" target="_blank" rel="noopener noreferrer">{lbl_ritorno}</a>'
             f'</div>',
             unsafe_allow_html=True,
         )
     else:
         url_intero = html.escape(url_gmaps_viaggio_multi_tappa(res["orig"], res["dest"], soste_sol), quote=True)
+        lbl_intero = (
+            "🗺️ Apri Intero Viaggio su Google Maps (con soste)"
+            if soste_sol
+            else "🗺️ Apri Intero Viaggio su Google Maps (diretto)"
+        )
         st.markdown(
             f'<a class="ev-gmaps-cta" href="{url_intero}" target="_blank" rel="noopener noreferrer">'
-            f'🗺️ Apri Intero Viaggio su Google Maps (con soste)'
+            f'{lbl_intero}'
             f'</a>',
             unsafe_allow_html=True,
         )
