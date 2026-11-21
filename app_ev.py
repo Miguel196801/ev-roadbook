@@ -2651,16 +2651,29 @@ def render_banner_verdetto(sol_a, res):
     n_soste = len(soste_a)
     tempo_tot_txt = formatta_durata(sol_a["tempo_totale_min"])
     bat_kwh = float(res["auto_cfg"]["bat_kwh"])
+    km_fine_andata = float(sol_a.get("km1", res["km1"]))
 
-    def _riassunto_tratta_telegrafico(soste_tratta, solo_andata=False):
+    def _formatta_km_soste(soste_tratta, is_ritorno=False):
+        km_vals = []
+        for s in soste_tratta:
+            km_rel = max(0.0, float(s["Km"]) - km_fine_andata) if is_ritorno else float(s["Km"])
+            km_vals.append(f"{int(round(km_rel))} km")
+        if len(km_vals) == 1:
+            return f"dopo {km_vals[0]}"
+        if len(km_vals) == 2:
+            return f"dopo {km_vals[0]} e {km_vals[1]}"
+        return f"dopo {', '.join(km_vals[:-1])} e {km_vals[-1]}"
+
+    def _riassunto_tratta_telegrafico(soste_tratta, solo_andata=False, is_ritorno=False):
         if not soste_tratta:
             return "nessuna sosta (arrivo diretto)" if solo_andata else "nessuna sosta"
+        km_info = _formatta_km_soste(soste_tratta, is_ritorno=is_ritorno)
         if len(soste_tratta) == 1:
             s = soste_tratta[0]
             kwh_s = max(1, int(round(max(0.0, (float(s["charge_to"]) - float(s["arr_pct"])) / 100.0 * bat_kwh))))
             min_s = int(s["minuti_ricarica"])
             nome_s = html.escape(s["Stazione"])
-            return f"1 sosta di ~{min_s} min (+{kwh_s} kWh) presso <strong>{nome_s}</strong>"
+            return f"1 sosta di ~{min_s} min (+{kwh_s} kWh) presso <strong>{nome_s}</strong> ({km_info})"
         min_tot = sum(int(s["minuti_ricarica"]) for s in soste_tratta)
         kwh_tot = max(
             1,
@@ -2674,7 +2687,7 @@ def render_banner_verdetto(sol_a, res):
             ),
         )
         nomi = ", ".join(html.escape(s["Stazione"]) for s in soste_tratta)
-        return f"{len(soste_tratta)} soste per ~{min_tot} min (+{kwh_tot} kWh) presso <strong>{nomi}</strong>"
+        return f"{len(soste_tratta)} soste per ~{min_tot} min (+{kwh_tot} kWh) presso <strong>{nomi}</strong> ({km_info})"
 
     if res["andata_ritorno"]:
         soste_andata = [s for s in soste_a if not s.get("e_ritorno")]
@@ -2682,15 +2695,15 @@ def render_banner_verdetto(sol_a, res):
         riepilogo_telegrafico = (
             f'<div style="margin-top:9px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.10); '
             f'font-size:0.88rem; color:#F1F5F9; line-height:1.55;">'
-            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_andata, solo_andata=False)}</div>'
-            f'<div>⬅️ <strong>Ritorno:</strong> {_riassunto_tratta_telegrafico(soste_ritorno, solo_andata=False)}</div>'
+            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_andata, solo_andata=False, is_ritorno=False)}</div>'
+            f'<div>⬅️ <strong>Ritorno:</strong> {_riassunto_tratta_telegrafico(soste_ritorno, solo_andata=False, is_ritorno=True)}</div>'
             f'</div>'
         )
     else:
         riepilogo_telegrafico = (
             f'<div style="margin-top:9px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.10); '
             f'font-size:0.88rem; color:#F1F5F9; line-height:1.55;">'
-            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_a, solo_andata=True)}</div>'
+            f'<div>➡️ <strong>Andata:</strong> {_riassunto_tratta_telegrafico(soste_a, solo_andata=True, is_ritorno=False)}</div>'
             f'</div>'
         )
 
@@ -3723,24 +3736,34 @@ with tab_viaggio:
                 )
             nome_operatore, operatore_keywords = estrai_info_operatore(scelta_operatore, operatore_custom)
 
-            # Terza voce dinamica universale: "Solo Tesla Supercharger" se Tutti gli operatori,
-            # altrimenti "Solo {nome_operatore} (anche fuori casello)"
-            etichetta_opz3 = (
-                f"🎯 Solo {nome_operatore} (anche fuori casello)"
-                if nome_operatore
-                else "🔴 Solo Tesla Supercharger"
-            )
+            # Visibilità 3ª opzione in base all'operatore scelto e al profilo utente:
+            # - Operatore specifico -> 3 opzioni con "🎯 Solo {nome_operatore} (anche fuori casello)"
+            #   (oppure "🔴 Solo Tesla Supercharger" se ha scelto Tesla)
+            # - "Tutti gli operatori" -> "🔴 Solo Tesla Supercharger" solo per Fabio, Elizabeth, Alessia;
+            #   per tutti gli altri utenti (Arianna, Chiara, Luciano, ecc.) solo le prime 2 opzioni
+            utente_famiglia_tesla = str(current_user or "").strip().lower() in ("fabio", "elizabeth", "alessia")
             mappa_etichette_rete = {
                 "tutte": "⚡ Tutte le colonnine veloci (Precedenza Autostrada)",
                 "ads": "🛣️ Solo in Autostrada (Aree di Servizio / Autogrill)",
-                "operatore": etichetta_opz3,
             }
-            if st.session_state.get("rad_rete") not in mappa_etichette_rete:
+            if nome_operatore:
+                if "tesla" in nome_operatore.lower():
+                    mappa_etichette_rete["operatore"] = "🔴 Solo Tesla Supercharger"
+                else:
+                    mappa_etichette_rete["operatore"] = f"🎯 Solo {nome_operatore} (anche fuori casello)"
+                opzioni_rete = ["tutte", "ads", "operatore"]
+            elif utente_famiglia_tesla:
+                mappa_etichette_rete["operatore"] = "🔴 Solo Tesla Supercharger"
+                opzioni_rete = ["tutte", "ads", "operatore"]
+            else:
+                opzioni_rete = ["tutte", "ads"]
+
+            if st.session_state.get("rad_rete") not in opzioni_rete:
                 st.session_state.pop("rad_rete", None)
 
             rete_scelta_cod = st.radio(
                 "Circuito / Rete di ricarica preferita",
-                options=["tutte", "ads", "operatore"],
+                options=opzioni_rete,
                 format_func=lambda c, m=mappa_etichette_rete: m[c],
                 index=0,
                 key="rad_rete",
