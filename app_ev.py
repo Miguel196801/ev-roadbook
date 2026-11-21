@@ -241,14 +241,76 @@ h1, h2, h3, h4, p, label, span, .stMarkdown {
 [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
     display: none !important;
 }
-/* Input, selectbox e campi numerici su sfondo scuro */
+/* Input, selectbox e campi numerici su sfondo scuro ad alto contrasto (compatibile anche con tema chiaro Cloud) */
 .stTextInput > div > div > input,
 .stNumberInput > div > div > input,
 .stSelectbox > div > div {
-    background-color: #1E222D !important;
+    background-color: #131722 !important;
     color: #F8FAFC !important;
     border: 1px solid #2F3545 !important;
     border-radius: 10px !important;
+}
+div[data-baseweb="base-input"] {
+    background-color: #131722 !important;
+    border-color: #2F3545 !important;
+}
+div[data-baseweb="select"] > div,
+div[data-baseweb="select"] span,
+div[data-baseweb="input"] input {
+    background-color: #131722 !important;
+    color: #F8FAFC !important;
+    -webkit-text-fill-color: #F8FAFC !important;
+}
+div[data-baseweb="input"] input::placeholder {
+    color: #94A3B8 !important;
+    -webkit-text-fill-color: #94A3B8 !important;
+    opacity: 1 !important;
+}
+/* Tendina aperta dei menu selectbox scura con testo chiaro */
+ul[role="listbox"],
+ul[role="listbox"] li,
+div[data-baseweb="popover"] > div {
+    background-color: #1E222D !important;
+    color: #F8FAFC !important;
+}
+ul[role="listbox"] li:hover,
+ul[role="listbox"] li[aria-selected="true"] {
+    background-color: #2D3548 !important;
+    color: #10B981 !important;
+}
+/* Occhio mostra/nascondi password e icone input scuri */
+[data-baseweb="input"] button,
+[data-baseweb="base-input"] button {
+    background-color: #131722 !important;
+    color: #94A3B8 !important;
+    border: none !important;
+}
+div[data-baseweb="select"] svg,
+[data-baseweb="input"] svg,
+[data-baseweb="base-input"] svg {
+    fill: #94A3B8 !important;
+    color: #94A3B8 !important;
+}
+/* Riquadri di errore, avviso e info (stAlert) scuri e nitidi */
+[data-testid="stAlert"] {
+    background-color: #1E293B !important;
+    color: #F8FAFC !important;
+    border-left: 4px solid #EF4444 !important;
+}
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span {
+    color: #F8FAFC !important;
+}
+/* Pulsante secondario scuro (es. Esci) */
+div.stButton > button[kind="secondary"] {
+    background-color: #1E222D !important;
+    color: #E2E8F0 !important;
+    border: 1px solid #2F3545 !important;
+    border-radius: 10px !important;
+}
+div.stButton > button[kind="secondary"]:hover {
+    background-color: #2D3548 !important;
+    color: #FFFFFF !important;
 }
 /* Pulsante primario ad alto contrasto (inclusi form di accesso) */
 div.stButton > button[kind="primary"],
