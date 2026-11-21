@@ -6,7 +6,7 @@ curve di ricarica DC reali, filtri rete/Autogrill/Supercharger e garanzia energe
 su Arrivo (B) e Rientro a Casa (A).
 """
 
-from datetime import date
+from datetime import date, datetime, time
 import hmac
 import html
 import json
@@ -14,6 +14,10 @@ import math
 import os
 import re
 from urllib.parse import quote_plus
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 from geopy.geocoders import Nominatim, Photon
 import polyline
@@ -152,6 +156,7 @@ FATTORE_CONSUMO_EXTRAURBANO = 0.84  # Riduzione consumo -16% su statali/extraurb
 COSTO_PEDAGGIO_KM = 0.078  # Stima media pedaggio autostradale italiano (€/km)
 TETTO_RICARICA_INTERMEDIA = 80  # Tetto massimo ricarica intermedia (evita fase lenta 80%-100%)
 SOGLIA_EMERGENZA_JOLLY = 4.0  # Soglia minima di emergenza (%) per il calcolo del Jolly (Piano B)
+KEYWORDS_EBIKE = ("biciclett", "bici", "ebike", "e-bike", "bike")
 UTENTI_FALLBACK_LOCALE = {
     "Fabio": "ev2026",
     "Alessia": "ev2026",
@@ -278,12 +283,17 @@ ul[role="listbox"] li[aria-selected="true"] {
     background-color: #2D3548 !important;
     color: #10B981 !important;
 }
-/* Occhio mostra/nascondi password e icone input scuri */
+/* Occhio mostra/nascondi password, pulsanti +/- number_input e icone input scuri */
 [data-baseweb="input"] button,
-[data-baseweb="base-input"] button {
+[data-baseweb="base-input"] button,
+[data-testid="stNumberInput"] button {
     background-color: #131722 !important;
-    color: #94A3B8 !important;
+    color: #F8FAFC !important;
     border: none !important;
+}
+[data-testid="stNumberInput"] button:hover {
+    background-color: #2D3548 !important;
+    color: #10B981 !important;
 }
 div[data-baseweb="select"] svg,
 [data-baseweb="input"] svg,
@@ -577,6 +587,40 @@ div[data-testid="stFormSubmitButton"] > button[kind="primary"]:hover {
     )
 
 
+def ora_corrente_italia_arrotondata():
+    """Restituisce l'orario corrente italiano (Europe/Rome) arrotondato ai 5 minuti."""
+    try:
+        now_it = datetime.now(ZoneInfo("Europe/Rome")) if ZoneInfo is not None else datetime.now()
+    except Exception:
+        now_it = datetime.now()
+    min_tot = now_it.hour * 60 + now_it.minute
+    min_arr = ((min_tot + 2) // 5) * 5
+    ore = (min_arr // 60) % 24
+    minuti = min_arr % 60
+    return time(ore, minuti)
+
+
+def formatta_ora_min(minuti_da_mezzanotte):
+    """Formatta i minuti dalla mezzanotte in HH:MM (aggiungendo +Ng se si supera la mezzanotte)."""
+    tot_m = max(0, int(round(minuti_da_mezzanotte)))
+    giorni, resto = divmod(tot_m, 1440)
+    hh, mm = divmod(resto, 60)
+    if giorni > 0:
+        return f"{hh:02d}:{mm:02d} (+{giorni}g)"
+    return f"{hh:02d}:{mm:02d}"
+
+
+def formatta_euro(importo):
+    """Formatta un importo in euro secondo lo stile italiano con virgola (es. 8,60 €)."""
+    return f"{max(0.0, float(importo)):.2f}".replace(".", ",") + " €"
+
+
+def e_colonnina_ebike(titolo):
+    """Restituisce True se il nome identifica una colonnina/presa per biciclette o e-bike."""
+    t_low = str(titolo or "").lower()
+    return any(kw in t_low for kw in KEYWORDS_EBIKE)
+
+
 def stagione_predefinita():
     """Determina la stagione iniziale in base al mese corrente."""
     mese = date.today().month
@@ -750,14 +794,13 @@ def _scegli_nome_poi_migliore(nome_a, nome_b, fallback_nome):
 
 
 @st.cache_resource
-def load_chargers_db(db_mtime=0.0):
+def load_chargers_db(db_mtime=0.0, filtro_ver=2):
     """
     Carica il database locale colonnine_it.json gestendo il formato a 8 campi
     [lat, lon, title, kw, is_dc, food_name, mall_name, in_ads] e la retrocompatibilità
-    con record a 7 o 5 campi. Il parametro db_mtime invalida automaticamente la cache
-    quando colonnine_it.json viene aggiornato.
+    con record a 7 o 5 campi, escludendo sempre le prese per biciclette/e-bike.
     """
-    _ = db_mtime
+    _ = (db_mtime, filtro_ver)
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "colonnine_it.json")
     if not os.path.exists(db_path):
         return []
@@ -781,11 +824,14 @@ def load_chargers_db(db_mtime=0.0):
             has_food, food_name, has_mall, mall_name, in_ads_db = 0, "", 0, "", 0
         else:
             continue
+        titolo_str = str(titolo)
+        if e_colonnina_ebike(titolo_str):
+            continue
         normalizzati.append(
             (
                 float(lat),
                 float(lon),
-                str(titolo),
+                titolo_str,
                 int(kw),
                 int(is_dc),
                 has_food,
@@ -980,9 +1026,11 @@ def calcola_percorso_osrm(p1, p2, evita_autostrade=False):
 
 
 def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
-    """Estrae e raggruppa tutte le colonnine (AC e DC) entro raggio_km usando Haversine sull'intero DB."""
+    """Estrae e raggruppa tutte le colonnine auto (AC e DC, escludendo e-bike) entro raggio_km."""
     raw_dest = []
     for lat, lon, titolo, kw, is_dc, has_food, has_mall, food_name, mall_name, _in_ads_db in db:
+        if e_colonnina_ebike(titolo):
+            continue
         dist = haversine_km(lat, lon, centro_lat, centro_lon)
         if dist > raggio_km:
             continue
@@ -1034,10 +1082,12 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
 
 
 def trova_colonnina_piu_vicina(db, centro_lat, centro_lon):
-    """Restituisce la singola colonnina più vicina nel database locale rispetto alle coordinate date."""
+    """Restituisce la singola colonnina auto più vicina nel database locale (escludendo e-bike)."""
     migliore = None
     best_dist = float("inf")
     for lat, lon, titolo, kw, is_dc, has_food, has_mall, food_name, mall_name, _in_ads_db in db:
+        if e_colonnina_ebike(titolo):
+            continue
         dist = haversine_km(lat, lon, centro_lat, centro_lon)
         if dist < best_dist:
             best_dist = dist
@@ -1082,7 +1132,7 @@ def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_au
         food_low = (food_name or "").lower()
         mall_low = (mall_name or "").lower()
         is_dest = "destination" in t_low
-        is_bike = any(bk in t_low for bk in ("bici", "e-bike", "ebike", "bike"))
+        is_bike = e_colonnina_ebike(t_low)
         is_tesla = ("tesla" in t_low or "supercharger" in t_low) and not is_dest
         is_brand_hpc = any(b in t_low for b in BRAND_HPC_NOTI) and not is_dest
         ha_kw_ads_esplicita = e_nome_area_di_servizio(t_low) or e_nome_area_di_servizio(food_low)
@@ -1227,6 +1277,7 @@ def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=Fa
 
     ch1 = analizza_colonnine_tratta(db, pts1, "➡️ Andata", offset_km=0.0, evita_autostrade=evita_autostrade)
     all_ch, tot_km, tot_dur = list(ch1), km1, dur1
+    dur2 = 0
 
     if andata_ritorno:
         r2 = calcola_percorso_osrm(p2, p1, evita_autostrade=evita_autostrade)
@@ -1252,7 +1303,7 @@ def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=Fa
         tot_km = km1 + km2
         tot_dur = dur1 + dur2
 
-    return all_ch, km1, tot_km, tot_dur
+    return all_ch, km1, tot_km, tot_dur, dur1, dur2
 
 
 def estrai_info_operatore(scelta_operatore, operatore_custom=""):
@@ -1984,14 +2035,148 @@ def testo_preferenza_sosta(stile_codice):
     return "⚡ Viaggio Veloce / Diretto (solo soste strettamente necessarie)"
 
 
+def calcola_cronologia_e_costi(sol, res):
+    """
+    Arricchisce una soluzione valida con:
+    - orari stimati (HH:MM) di arrivo/ripartenza per ogni sosta, arrivo a destinazione,
+      ripartenza del ritorno (dopo permanenza) e rientro finale a casa;
+    - chilometraggio azzerato a 0.0 km per le soste della tratta di ritorno (km_tratta);
+    - riepilogo economico completo (energia casa + ricarica colonnine + pedaggio + totale).
+    """
+    if not sol or not sol.get("valido"):
+        return sol
+
+    andata_ritorno = bool(res.get("andata_ritorno", False))
+    km1 = float(sol.get("km1", res["km1"]))
+    tot_km = float(sol.get("tot_km", res["tot_km"]))
+    km2 = max(0.0, tot_km - km1) if andata_ritorno else 0.0
+    tot_dur = float(sol.get("tot_dur", res["tot_dur"]))
+    dur1 = float(sol.get("dur1", res.get("dur1", tot_dur / 2.0 if andata_ritorno else tot_dur)))
+    dur2 = float(sol.get("dur2", res.get("dur2", max(0.0, tot_dur - dur1)))) if andata_ritorno else 0.0
+
+    # Ora di partenza in minuti dalla mezzanotte
+    ora_part_str = str(res.get("ora_partenza", "09:00"))
+    try:
+        hh_p, mm_p = [int(x) for x in ora_part_str.split(":")[:2]]
+        min_partenza = hh_p * 60 + mm_p
+    except Exception:
+        min_partenza = 9 * 60
+    sosta_dest_min = int(round(float(res.get("ore_permanenza", 2.0)) * 60.0)) if andata_ritorno else 0
+
+    vel_andata = (dur1 / km1) if km1 > 0.0 else 0.0
+    vel_ritorno = (dur2 / km2) if km2 > 0.0 else vel_andata
+
+    soste_orig = sol.get("soste", [])
+    soste_andata = []
+    soste_ritorno = []
+    for s in soste_orig:
+        e_ritorno = andata_ritorno and ("Ritorno" in str(s.get("Tratta", "")) or float(s["Km"]) > km1 + 0.05)
+        if e_ritorno:
+            soste_ritorno.append(dict(s))
+        else:
+            soste_andata.append(dict(s))
+
+    # Cronologia tratta di andata (Km 0 -> km1)
+    t_curr = float(min_partenza)
+    km_prev = 0.0
+    for s in soste_andata:
+        km_s = max(km_prev, float(s["Km"]))
+        guida_min = (km_s - km_prev) * vel_andata
+        dev_tot = float(s.get("detour_min", 0))
+        dev_in = dev_tot / 2.0
+        dev_out = dev_tot - dev_in
+        t_arr = t_curr + guida_min + dev_in
+        t_rip = t_arr + float(s.get("minuti_ricarica", 0))
+        s["km_tratta"] = round(float(s["Km"]), 1)
+        s["e_ritorno"] = False
+        s["ora_arrivo"] = formatta_ora_min(t_arr)
+        s["ora_ripartenza"] = formatta_ora_min(t_rip)
+        t_curr = t_rip + dev_out
+        km_prev = km_s
+
+    t_arrivo_b = t_curr + max(0.0, (km1 - km_prev) * vel_andata)
+    ora_arrivo_b = formatta_ora_min(t_arrivo_b)
+
+    # Cronologia tratta di ritorno (Km azzerato a 0.0 da destinazione -> km2)
+    ora_partenza_ritorno = None
+    ora_rientro_a = None
+    if andata_ritorno:
+        t_part_rit = t_arrivo_b + float(sosta_dest_min)
+        ora_partenza_ritorno = formatta_ora_min(t_part_rit)
+        t_curr = t_part_rit
+        km_prev_r = 0.0
+        for s in soste_ritorno:
+            km_rel = max(0.0, round(float(s["Km"]) - km1, 1))
+            km_eff = max(km_prev_r, km_rel)
+            guida_min = (km_eff - km_prev_r) * vel_ritorno
+            dev_tot = float(s.get("detour_min", 0))
+            dev_in = dev_tot / 2.0
+            dev_out = dev_tot - dev_in
+            t_arr = t_curr + guida_min + dev_in
+            t_rip = t_arr + float(s.get("minuti_ricarica", 0))
+            s["km_tratta"] = km_rel
+            s["e_ritorno"] = True
+            s["ora_arrivo"] = formatta_ora_min(t_arr)
+            s["ora_ripartenza"] = formatta_ora_min(t_rip)
+            t_curr = t_rip + dev_out
+            km_prev_r = km_eff
+
+        t_rientro_a = t_curr + max(0.0, (km2 - km_prev_r) * vel_ritorno)
+        ora_rientro_a = formatta_ora_min(t_rientro_a)
+
+    soste_arricchite = soste_andata + soste_ritorno
+
+    # Calcolo economico completo: energia da casa + ricariche colonnine + pedaggio autostradale
+    bat_kwh = float(res["auto_cfg"]["bat_kwh"])
+    kwh_viaggio = float(sol.get("kwh_totali", res["kwh_totali"]))
+    kwh_colonnine = round(
+        sum(
+            max(0.0, (float(s["charge_to"]) - float(s["arr_pct"])) / 100.0 * bat_kwh)
+            for s in soste_arricchite
+        ),
+        1,
+    )
+    kwh_casa = max(0.0, round(kwh_viaggio - kwh_colonnine, 1))
+    prezzo_casa = float(res.get("costo_casa_kwh", 0.25))
+    prezzo_col = float(res.get("costo_col_kwh", 0.69))
+    costo_casa = round(kwh_casa * prezzo_casa, 2)
+    costo_col = round(kwh_colonnine * prezzo_col, 2)
+
+    tipo_strada_txt = str(sol.get("tipo_strada", ""))
+    senza_autostrada = ("Senza Autostrada" in tipo_strada_txt) or (res.get("strada_codice") == "no_auto")
+    costo_pedaggio = 0.0 if senza_autostrada else round(tot_km * COSTO_PEDAGGIO_KM, 2)
+    costo_totale = round(costo_casa + costo_col + costo_pedaggio, 2)
+
+    return {
+        **sol,
+        "soste": soste_arricchite,
+        "km2": round(km2, 1),
+        "dur1": int(round(dur1)),
+        "dur2": int(round(dur2)),
+        "ora_partenza": ora_part_str,
+        "ora_arrivo_b": ora_arrivo_b,
+        "ora_partenza_ritorno": ora_partenza_ritorno,
+        "ora_rientro_a": ora_rientro_a,
+        "kwh_casa": kwh_casa,
+        "kwh_colonnine": kwh_colonnine,
+        "costo_casa": costo_casa,
+        "costo_colonnine": costo_col,
+        "costo_pedaggio": costo_pedaggio,
+        "costo_totale": costo_totale,
+        "senza_autostrada": senza_autostrada,
+    }
+
+
 def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
     """
-    Ricalcola dinamicamente le soste, i tempi e le percentuali finali di una soluzione
+    Ricalcola dinamicamente le soste, i tempi, gli orari, i costi e le percentuali finali
     tenendo conto delle eventuali stazioni alternative selezionate nei menu a tendina.
     Restituisce (soluzione_aggiornata, lista_controlli_selectbox).
     """
-    if not sol_base or not sol_base.get("valido") or not sol_base.get("soste") or "auto_cfg" not in res:
+    if not sol_base or not sol_base.get("valido") or "auto_cfg" not in res:
         return sol_base, []
+    if not sol_base.get("soste"):
+        return calcola_cronologia_e_costi(sol_base, res), []
 
     all_ch = sol_base.get("all_ch", res["all_ch"])
     pool_rete = sol_base.get("pool_rete", res.get("rete_codice", "tutte"))
@@ -2050,17 +2235,27 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
 
         # Mostra tutte le colonnine compatibili raggiungibili (5% <= batteria <= 75%),
         # ordinate per vicinanza crescente alla stazione principale con delta km esplicito
+        # (con contachilometri azzerato da destinazione per le soste del ritorno)
+        e_sosta_ritorno = andata_ritorno and ("Ritorno" in str(def_s.get("Tratta", "")) or def_s["Km"] > km1 + 0.05)
+        km_inf_filtro = max(curr_km + 10.0, km1 + 3.0) if e_sosta_ritorno else (curr_km + 10.0)
+        dest_breve = res["dest"]
+
+        def _fmt_km_opz(km_val):
+            if e_sosta_ritorno:
+                return f"Km {max(0.0, km_val - km1):.1f} da {dest_breve}"
+            return f"Km {km_val:.1f}"
+
         def_key = f"{def_s['Km']:.1f}|{def_s['Stazione']}"
         arr_def = max(0.0, curr_pct - (def_s["Km"] - curr_km) / km_per_pct)
         opzioni_id = [def_key]
         mappa_etichette = {
-            def_key: f"⭐ {def_s['Stazione']} • Km {def_s['Km']:.1f} (Arrivo al {arr_def:.0f}%)"
+            def_key: f"⭐ {def_s['Stazione']} • {_fmt_km_opz(def_s['Km'])} (Arrivo al {arr_def:.0f}%)"
         }
         mappa_stazioni = {def_key: def_s}
 
         alternative = [
             c for c in pool_corrente
-            if (curr_km + 10.0 <= c["Km"] <= max(max_reach, def_s["Km"]))
+            if (km_inf_filtro <= c["Km"] <= max(max_reach, def_s["Km"]))
             and (5.0 <= (curr_pct - (c["Km"] - curr_km) / km_per_pct) <= 75.0)
             and f"{c['Km']:.1f}|{c['Stazione']}" != def_key
         ]
@@ -2076,7 +2271,7 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
             direzione = f"⬅️ Prima (-{delta_int} km)" if delta_km < 0 else f"➡️ Dopo (+{delta_int} km)"
             opzioni_id.append(alt_key)
             mappa_etichette[alt_key] = (
-                f"{direzione} • {alt['Stazione']} • Km {alt['Km']:.1f} (Arrivo al {arr_alt:.0f}%)"
+                f"{direzione} • {alt['Stazione']} • {_fmt_km_opz(alt['Km'])} (Arrivo al {arr_alt:.0f}%)"
             )
             mappa_stazioni[alt_key] = alt
 
@@ -2210,7 +2405,7 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         "pct_arrivo_b": pct_arrivo_b,
         "pct_rientro_a": pct_rientro_a,
     }
-    return sol_agg, controlli
+    return calcola_cronologia_e_costi(sol_agg, res), controlli
 
 
 def render_step_header(numero, titolo):
@@ -2297,13 +2492,18 @@ def render_banner_verdetto(sol_a, res):
         )
 
 
-def render_card_sosta(indice, sosta, colore_bordo="#10B981"):
+def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, colore_bordo="#10B981"):
     """Renderizza una singola fermata di ricarica come Dark Card finanziaria mobile-first."""
     nome = html.escape(sosta["Stazione"])
     tratta = html.escape(sosta["Tratta"])
     nota_pos = html.escape(sosta["Note"])
     potenza = html.escape(sosta["Potenza"])
     maps_url = html.escape(sosta["Maps"], quote=True)
+
+    e_ritorno = bool(sosta.get("e_ritorno"))
+    dest_nome = html.escape(res["dest"]) if res else "destinazione"
+    km_mostrato = float(sosta.get("km_tratta", sosta["Km"]))
+    km_etichetta = f"Km {km_mostrato:.1f} da {dest_nome}" if e_ritorno else f"Km {km_mostrato:.1f}"
 
     food_name = sosta.get("food_name") or (FALLBACK_FOOD_NAME if sosta.get("has_food") else "")
     mall_name = sosta.get("mall_name") or (FALLBACK_MALL_NAME if sosta.get("has_mall") else "")
@@ -2325,15 +2525,29 @@ def render_card_sosta(indice, sosta, colore_bordo="#10B981"):
 
     righe_locali = costruisci_righe_locali(sosta["lat"], sosta["lon"], food_name, mall_name)
 
+    riga_orario = ""
+    if sosta.get("ora_arrivo") and sosta.get("ora_ripartenza"):
+        riga_orario = (
+            f'<div class="ev-kv">'
+            f'<span class="ev-k">🕒 Orario stimato</span>'
+            f'<span class="ev-v">Arrivo ore {html.escape(sosta["ora_arrivo"])} → Ripartenza ore {html.escape(sosta["ora_ripartenza"])}</span>'
+            f'</div>'
+        )
+
     riga_jolly = ""
     jolly = sosta.get("jolly")
     if jolly:
         j_nome = html.escape(jolly["Stazione"])
-        tag_j_ads = " • 🛣️ AdS" if jolly.get("in_ads") else ""
+        j_km_disp = max(0.0, float(jolly["Km"]) - km1_offset) if e_ritorno else float(jolly["Km"])
+        j_km_txt = f"Km {j_km_disp:.1f} da {dest_nome}" if e_ritorno else f"Km {j_km_disp:.1f}"
+        if jolly.get("in_ads"):
+            j_dettaglio = f'{j_nome} • 🛣️ AdS • {j_km_txt} (+{jolly["delta_km"]:.1f} km, emerg. ~{jolly["pct_emergenza"]}%)'
+        else:
+            j_dettaglio = f'{j_nome} • Fuori casello d\'emergenza • +{jolly["delta_km"]:.1f} km ({j_km_txt}, emerg. ~{jolly["pct_emergenza"]}%)'
         riga_jolly = (
             f'<div class="ev-kv">'
             f'<span class="ev-k">🛟 Piano B (Jolly)</span>'
-            f'<span class="ev-v" style="color:#93C5FD;">{j_nome}{tag_j_ads} • Km {jolly["Km"]:.1f} (+{jolly["delta_km"]:.1f} km, emerg. ~{jolly["pct_emergenza"]}%)</span>'
+            f'<span class="ev-v" style="color:#93C5FD;">{j_dettaglio}</span>'
             f'</div>'
         )
 
@@ -2348,10 +2562,11 @@ def render_card_sosta(indice, sosta, colore_bordo="#10B981"):
         f'<div class="ev-card-top">'
         f'<div>'
         f'<div class="ev-card-title">🛑 Sosta {indice} • {nome}</div>'
-        f'<div class="ev-card-sub">{tratta} • Km {sosta["Km"]:.1f} • {nota_pos}</div>'
+        f'<div class="ev-card-sub">{tratta} • {km_etichetta} • {nota_pos}</div>'
         f'</div>'
         f'<div class="ev-badges">{"".join(badges)}</div>'
         f'</div>'
+        f'{riga_orario}'
         f'<div class="ev-kv"><span class="ev-k">Potenza stazione</span><span class="ev-v">{potenza}</span></div>'
         f'<div class="ev-kv"><span class="ev-k">Batteria (Arrivo → Ripartenza)</span><span class="ev-v">{sosta["arr_pct"]:.0f}% → {sosta["charge_to"]}%</span></div>'
         f'<div class="ev-kv"><span class="ev-k">Tempo stimato di ricarica</span><span class="ev-v">⏱️ {sosta["minuti_ricarica"]} min</span></div>'
@@ -2364,56 +2579,36 @@ def render_card_sosta(indice, sosta, colore_bordo="#10B981"):
     st.markdown(card_html, unsafe_allow_html=True)
 
 
-def render_card_arrivo_finale(sol, res, colore_bordo="#10B981"):
-    """Renderizza la card finale dedicata all'arrivo (e al rientro a casa se Andata + Ritorno)."""
+def render_card_arrivo_destinazione(sol, res, colore_bordo="#10B981"):
+    """Renderizza la card di Arrivo a destinazione (B) con orario stimato, batteria e colonnina più vicina."""
     dest_esc = html.escape(res["dest"])
-    orig_esc = html.escape(res["orig"])
-    km1_sol = sol.get("km1", res["km1"])
-    tot_km_sol = sol.get("tot_km", res["tot_km"])
+    km1_sol = float(sol.get("km1", res["km1"]))
     pct_b = sol["pct_arrivo_b"]
     min_b = res["p_arr_b"]
     ok_b = pct_b >= min_b - 0.5
     col_b = "#34D399" if ok_b else "#F87171"
+    ora_arr_b = html.escape(str(sol.get("ora_arrivo_b") or "--:--"))
 
-    if res["andata_ritorno"]:
-        pct_a = sol["pct_rientro_a"]
-        min_a = res["p_home_a"]
-        ok_a = pct_a >= min_a - 0.5
-        col_a = "#34D399" if ok_a else "#F87171"
-        tutto_ok = ok_b and ok_a
-        titolo = f"🏁 Arrivo a {dest_esc} & Rientro a {orig_esc}"
-        righe = (
-            f'<div class="ev-kv"><span class="ev-k">Tappa intermedia — Arrivo a {dest_esc}</span>'
-            f'<span class="ev-v">Km {km1_sol:.1f}</span></div>'
-            f'<div class="ev-kv"><span class="ev-k">Batteria all\'Arrivo ({dest_esc}) vs Minima</span>'
-            f'<span class="ev-v" style="color:{col_b};">{pct_b:.0f}% <span style="color:#94A3B8;font-weight:500;">(min. {min_b}%)</span></span></div>'
-            f'<div class="ev-kv"><span class="ev-k">Distanza totale raggiunta — Rientro a {orig_esc}</span>'
-            f'<span class="ev-v">{tot_km_sol:.1f} km</span></div>'
-            f'<div class="ev-kv"><span class="ev-k">Batteria al Rientro ({orig_esc}) vs Minima</span>'
-            f'<span class="ev-v" style="color:{col_a};">{pct_a:.0f}% <span style="color:#94A3B8;font-weight:500;">(min. {min_a}%)</span></span></div>'
-        )
-    else:
-        tutto_ok = ok_b
-        titolo = f"🏁 Arrivo a {dest_esc}"
-        righe = (
-            f'<div class="ev-kv"><span class="ev-k">Distanza totale raggiunta</span>'
-            f'<span class="ev-v">{tot_km_sol:.1f} km</span></div>'
-            f'<div class="ev-kv"><span class="ev-k">Batteria stimata all\'arrivo</span>'
-            f'<span class="ev-v" style="color:{col_b};">{pct_b:.0f}%</span></div>'
-            f'<div class="ev-kv"><span class="ev-k">Batteria minima richiesta</span>'
-            f'<span class="ev-v">{min_b}%</span></div>'
-        )
+    etichetta_km = "Distanza tratta di andata" if res["andata_ritorno"] else "Distanza totale raggiunta"
+    righe = (
+        f'<div class="ev-kv"><span class="ev-k">{etichetta_km}</span>'
+        f'<span class="ev-v">{km1_sol:.1f} km</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">🕒 Arrivo previsto</span>'
+        f'<span class="ev-v">ore {ora_arr_b}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">Batteria stimata all\'arrivo</span>'
+        f'<span class="ev-v" style="color:{col_b};">{pct_b:.0f}% <span style="color:#94A3B8;font-weight:500;">(min. {min_b}%)</span></span></div>'
+    )
 
     badge_stato = (
-        '<span class="ev-badge ev-b-green">✅ Traguardo Garantito</span>'
-        if tutto_ok
+        '<span class="ev-badge ev-b-green">✅ Arrivo Garantito</span>'
+        if ok_b
         else '<span class="ev-badge ev-b-amber">⚠️ Sotto soglia minima</span>'
     )
 
-    # Indicazione colonnina più vicina al punto di arrivo dal database locale
+    # Indicazione colonnina auto più vicina al punto di arrivo dal database locale (escluse e-bike)
     riga_vicina = ""
     vicina = res.get("colonnina_vicina_dest")
-    if vicina:
+    if vicina and not e_colonnina_ebike(vicina.get("Stazione", "")):
         v_nome = html.escape(vicina["Stazione"])
         v_pot = html.escape(vicina["Potenza"])
         v_maps = html.escape(vicina["Maps"], quote=True)
@@ -2426,7 +2621,7 @@ def render_card_arrivo_finale(sol, res, colore_bordo="#10B981"):
             f'</div>'
         )
 
-    # Pulsante diretto verde/blu con query testuale codificata sull'indirizzo di destinazione + tooltip "?" e nota ℹ️
+    # Pulsante diretto con query testuale sull'indirizzo di destinazione + tooltip "?" e nota ℹ️
     url_gmaps_zona = html.escape(url_gmaps_colonnine_indirizzo(res["dest"]), quote=True)
     testo_help_gmaps = (
         "Serve a verificare su Google Maps anche eventuali colonnine installate di recente "
@@ -2452,12 +2647,51 @@ def render_card_arrivo_finale(sol, res, colore_bordo="#10B981"):
     card_html = (
         f'<div class="ev-card" style="border-left-color:{colore_bordo};">'
         f'<div class="ev-card-top">'
-        f'<div class="ev-card-title">{titolo}</div>'
+        f'<div class="ev-card-title">🏁 Arrivo a {dest_esc}</div>'
         f'<div class="ev-badges">{badge_stato}</div>'
         f'</div>'
         f'{righe}'
         f'{riga_vicina}'
         f'{btn_gmaps_zona}'
+        f'</div>'
+    )
+    st.markdown(card_html, unsafe_allow_html=True)
+
+
+def render_card_rientro_finale(sol, res, colore_bordo="#10B981"):
+    """Renderizza la card finale dedicata al rientro a casa (A) in modalità Andata + Ritorno."""
+    orig_esc = html.escape(res["orig"])
+    dest_esc = html.escape(res["dest"])
+    km2_sol = float(sol.get("km2", max(0.0, float(sol.get("tot_km", res["tot_km"])) - float(sol.get("km1", res["km1"])))))
+    tot_km_sol = float(sol.get("tot_km", res["tot_km"]))
+    pct_a = sol["pct_rientro_a"]
+    min_a = res["p_home_a"]
+    ok_a = pct_a >= min_a - 0.5
+    col_a = "#34D399" if ok_a else "#F87171"
+    ora_rip_rit = html.escape(str(sol.get("ora_partenza_ritorno") or "--:--"))
+    ora_rientro = html.escape(str(sol.get("ora_rientro_a") or "--:--"))
+    ore_perm = float(res.get("ore_permanenza", 2.0))
+
+    badge_stato = (
+        '<span class="ev-badge ev-b-green">✅ Rientro Garantito</span>'
+        if ok_a
+        else '<span class="ev-badge ev-b-amber">⚠️ Sotto soglia minima</span>'
+    )
+
+    card_html = (
+        f'<div class="ev-card" style="border-left-color:{colore_bordo};">'
+        f'<div class="ev-card-top">'
+        f'<div class="ev-card-title">🏠 Rientro Finale a {orig_esc}</div>'
+        f'<div class="ev-badges">{badge_stato}</div>'
+        f'</div>'
+        f'<div class="ev-kv"><span class="ev-k">Ripartenza da {dest_esc} (dopo {ore_perm:.1f}h di sosta)</span>'
+        f'<span class="ev-v">ore {ora_rip_rit}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">Distanza ritorno • Totale A/R</span>'
+        f'<span class="ev-v">{km2_sol:.1f} km • {tot_km_sol:.1f} km totali</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">🕒 Rientro previsto</span>'
+        f'<span class="ev-v">ore {ora_rientro}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">Batteria stimata al rientro</span>'
+        f'<span class="ev-v" style="color:{col_a};">{pct_a:.0f}% <span style="color:#94A3B8;font-weight:500;">(min. {min_a}%)</span></span></div>'
         f'</div>'
     )
     st.markdown(card_html, unsafe_allow_html=True)
@@ -2615,9 +2849,21 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
 
     dur_sol = sol.get("tot_dur", res["tot_dur"])
     km_sol = sol.get("tot_km", res["tot_km"])
+    km1_sol = float(sol.get("km1", res["km1"]))
+    km2_sol = float(sol.get("km2", max(0.0, km_sol - km1_sol)))
     cons_sol = sol.get("cons_eff", res["cons_eff"])
     kwh_sol = sol.get("kwh_totali", res["kwh_totali"])
     tipo_strada_sol = sol.get("tipo_strada")
+
+    # Dati economici completi (casa + colonnine + pedaggio + totale)
+    kwh_casa = float(sol.get("kwh_casa", kwh_sol))
+    kwh_col = float(sol.get("kwh_colonnine", 0.0))
+    costo_casa = float(sol.get("costo_casa", 0.0))
+    costo_col = float(sol.get("costo_colonnine", 0.0))
+    costo_pedaggio = float(sol.get("costo_pedaggio", 0.0))
+    costo_totale = float(sol.get("costo_totale", costo_casa + costo_col + costo_pedaggio))
+    senza_auto = bool(sol.get("senza_autostrada", False))
+    pedaggio_txt = "0,00 € (senza autostrada)" if senza_auto else f"~{formatta_euro(costo_pedaggio)}"
 
     riga_strada = ""
     if tipo_strada_sol:
@@ -2629,37 +2875,82 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
     riepilogo_html = (
         f'<div class="ev-card" style="border-left-color:{colore_bordo};">'
         f'<div class="ev-card-top">'
-        f'<div class="ev-card-title">📊 Riepilogo Tempi</div>'
+        f'<div class="ev-card-title">📊 Riepilogo Tempi &amp; Costi</div>'
         f'<div class="ev-badges">{stato_badge}</div>'
         f'</div>'
         f'{riga_strada}'
         f'<div class="ev-kv"><span class="ev-k">Tempo guida stradale</span><span class="ev-v">{formatta_durata(dur_sol)}</span></div>'
         f'<div class="ev-kv"><span class="ev-k">Ricarica + deviazioni</span><span class="ev-v">{sol["minuti_ricarica"]} min ricarica (+{sol["minuti_deviazione"]} min manovre/deviazioni)</span></div>'
         f'<div class="ev-kv"><span class="ev-k">Preferenza sosta applicata</span><span class="ev-v">{pref_txt}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">🏠 Energia da casa ({kwh_casa:.1f} kWh)</span><span class="ev-v">~{formatta_euro(costo_casa)}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">⚡ Ricarica alle colonnine ({kwh_col:.1f} kWh)</span><span class="ev-v">~{formatta_euro(costo_col)}</span></div>'
+        f'<div class="ev-kv"><span class="ev-k">🛣️ Stima pedaggio autostradale</span><span class="ev-v">{pedaggio_txt}</span></div>'
+        f'<div class="ev-kv" style="border-top:1px solid rgba(255,255,255,0.12); padding-top:8px; margin-top:2px;">'
+        f'<span class="ev-k" style="color:#F8FAFC; font-weight:700;">💶 Costo Totale Stimato Viaggio</span>'
+        f'<span class="ev-v" style="color:#34D399; font-size:1.02rem; font-weight:800;">~{formatta_euro(costo_totale)}</span>'
+        f'</div>'
         f'</div>'
     )
     st.markdown(riepilogo_html, unsafe_allow_html=True)
 
-    # Mostra solo le fermate reali, ciascuna con il proprio menu a tendina compatto per alternative prima/dopo
-    for idx, sosta in enumerate(sol["soste"], start=1):
-        if idx - 1 < len(controlli):
-            sel_key, opzioni_id, mappa_etichette = controlli[idx - 1]
+    soste_sol = sol.get("soste", [])
+    orig_esc = html.escape(res["orig"])
+    dest_esc = html.escape(res["dest"])
+    ora_part = html.escape(str(sol.get("ora_partenza") or res.get("ora_partenza", "--:--")))
+    ora_rip_rit = html.escape(str(sol.get("ora_partenza_ritorno") or "--:--"))
+
+    def _render_sosta_con_selettore(idx_global, sosta_item):
+        if idx_global - 1 < len(controlli):
+            sel_key, opzioni_id, mappa_etichette = controlli[idx_global - 1]
             st.selectbox(
-                f"🔄 Cambia stazione Sosta {idx} (alternative prima/dopo lungo il percorso)",
+                f"🔄 Cambia stazione Sosta {idx_global} (alternative prima/dopo lungo il percorso)",
                 options=opzioni_id,
                 format_func=lambda sid, m=mappa_etichette: m[sid],
                 key=sel_key,
             )
-        render_card_sosta(idx, sosta, colore_bordo=colore_bordo)
+        render_card_sosta(idx_global, sosta_item, res=res, km1_offset=km1_sol, colore_bordo=colore_bordo)
 
-    # Card finale dedicata all'arrivo (e rientro a casa se Andata + Ritorno)
-    render_card_arrivo_finale(sol, res, colore_bordo=colore_bordo)
+    if res["andata_ritorno"]:
+        # --- SEZIONE 1: VIAGGIO DI ANDATA ---
+        st.markdown(
+            f'<div class="ev-step-header" style="border-left-color:#10B981; margin-top:14px;">'
+            f'<span class="ev-step-title">➡️ VIAGGIO DI ANDATA ({orig_esc} → {dest_esc})</span>'
+            f'<span class="ev-step-tag" style="background:rgba(16,185,129,0.16); color:#34D399;">{km1_sol:.0f} km • Partenza {ora_part}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        soste_andata_idx = [(idx, s) for idx, s in enumerate(soste_sol, start=1) if not s.get("e_ritorno")]
+        soste_ritorno_idx = [(idx, s) for idx, s in enumerate(soste_sol, start=1) if s.get("e_ritorno")]
+
+        for idx_g, sosta in soste_andata_idx:
+            _render_sosta_con_selettore(idx_g, sosta)
+
+        # Card Arrivo a Destinazione subito al termine dell'andata
+        render_card_arrivo_destinazione(sol, res, colore_bordo=colore_bordo)
+
+        # --- SEZIONE 2: VIAGGIO DI RITORNO (contachilometri azzerato a Km 0.0) ---
+        st.markdown(
+            f'<div class="ev-step-header" style="border-left-color:#3B82F6; margin-top:16px;">'
+            f'<span class="ev-step-title">⬅️ VIAGGIO DI RITORNO ({dest_esc} → {orig_esc})</span>'
+            f'<span class="ev-step-tag">{km2_sol:.0f} km • Ripartenza {ora_rip_rit}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        for idx_g, sosta in soste_ritorno_idx:
+            _render_sosta_con_selettore(idx_g, sosta)
+
+        # Card Finale di Rientro a Casa
+        render_card_rientro_finale(sol, res, colore_bordo=colore_bordo)
+    else:
+        # Solo Andata: soste progressive e card di arrivo a destinazione
+        for idx_g, sosta in enumerate(soste_sol, start=1):
+            _render_sosta_con_selettore(idx_g, sosta)
+        render_card_arrivo_destinazione(sol, res, colore_bordo=colore_bordo)
 
     # Pulsante/i per aprire l'intero itinerario multi-tappa su Google Maps (con tutte le soste)
-    soste_sol = sol.get("soste", [])
     if res["andata_ritorno"]:
-        soste_andata = [s for s in soste_sol if "Andata" in s.get("Tratta", "")]
-        soste_ritorno = [s for s in soste_sol if "Ritorno" in s.get("Tratta", "")]
+        soste_andata = [s for s in soste_sol if not s.get("e_ritorno")]
+        soste_ritorno = [s for s in soste_sol if s.get("e_ritorno")]
         url_andata = html.escape(url_gmaps_viaggio_multi_tappa(res["orig"], res["dest"], soste_andata), quote=True)
         url_ritorno = html.escape(url_gmaps_viaggio_multi_tappa(res["dest"], res["orig"], soste_ritorno), quote=True)
         st.markdown(
@@ -2765,7 +3056,7 @@ current_user = st.session_state["auth_user"]
 
 _db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "colonnine_it.json")
 _db_mtime = os.path.getmtime(_db_file) if os.path.exists(_db_file) else 0.0
-db = load_chargers_db(_db_mtime)
+db = load_chargers_db(_db_mtime, filtro_ver=2)
 
 # Inizializzazione stato sessione (benvenuto pulito all'apertura / dopo F5)
 if st.session_state.pop("reset_nuovo_viaggio", False):
@@ -2775,6 +3066,7 @@ if st.session_state.pop("reset_nuovo_viaggio", False):
     st.session_state["inp_dest"] = ""
     st.session_state["inp_operatore_custom"] = ""
     st.session_state["sel_operatore"] = OPERATORI_OPZIONI[0]
+    st.session_state["inp_ora_partenza"] = ora_corrente_italia_arrotondata()
     st.session_state.pop("roadbook_res", None)
     for k in list(st.session_state.keys()):
         if str(k).startswith("sel_alt_"):
@@ -2788,6 +3080,8 @@ if "inp_orig" not in st.session_state:
     st.session_state["inp_orig"] = ""
 if "inp_dest" not in st.session_state:
     st.session_state["inp_dest"] = ""
+if "inp_ora_partenza" not in st.session_state:
+    st.session_state["inp_ora_partenza"] = ora_corrente_italia_arrotondata()
 if "inp_zona_localita" not in st.session_state:
     st.session_state["inp_zona_localita"] = ""
 if "sync_zona_dest" in st.session_state:
@@ -2825,8 +3119,8 @@ with tab_viaggio:
             etichetta_expander = "⚙️ Configura Viaggio (Auto, Itinerario, Soste) — Tocca per modificare"
 
         with st.expander(etichetta_expander, expanded=cfg_aperto):
-            # --- STEP 1: Auto, Stagione e Guida ---
-            render_step_header(1, "🚗 Auto, Stagione e Guida")
+            # --- STEP 1: Auto, Tariffe, Stagione e Guida ---
+            render_step_header(1, "🚗 Auto, Tariffe, Stagione e Guida")
 
             opzioni_auto_utente = opzioni_auto_per_utente(current_user)
             if st.session_state.get("sel_auto") not in opzioni_auto_utente:
@@ -2846,6 +3140,27 @@ with tab_viaggio:
                 custom_dc = c_a3.number_input("Max DC (kW)", 22, 350, 120, 10, key="num_dc")
 
             auto_cfg = costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc)
+
+            # Tariffe energia modificabili (casa e colonnine veloci) per il riepilogo economico completo
+            c_t1, c_t2 = st.columns(2)
+            costo_casa_kwh = c_t1.number_input(
+                "🏠 Costo energia casa (€/kWh)",
+                min_value=0.05,
+                max_value=1.50,
+                value=0.25,
+                step=0.01,
+                format="%.2f",
+                key="num_costo_casa",
+            )
+            costo_col_kwh = c_t2.number_input(
+                "⚡ Costo colonnine veloci (€/kWh)",
+                min_value=0.10,
+                max_value=2.00,
+                value=0.69,
+                step=0.01,
+                format="%.2f",
+                key="num_costo_col",
+            )
 
             stagioni_chiavi = list(STAGIONI.keys())
             idx_stagione_default = stagioni_chiavi.index(stagione_predefinita())
@@ -2903,6 +3218,32 @@ with tab_viaggio:
             )
             andata_ritorno = "Ritorno" in modalita_viaggio
 
+            # Ora di partenza modificabile (preimpostata sull'ora italiana arrotondata ai 5 min) + permanenza se A/R
+            ore_permanenza = 2.0
+            if andata_ritorno:
+                c_o1, c_o2 = st.columns(2)
+                ora_partenza_val = c_o1.time_input(
+                    "🕒 Ora di partenza",
+                    step=300,
+                    key="inp_ora_partenza",
+                )
+                ore_permanenza = c_o2.number_input(
+                    "⏱️ Durata permanenza a destinazione (ore)",
+                    min_value=0.0,
+                    max_value=72.0,
+                    value=2.0,
+                    step=0.5,
+                    format="%.1f",
+                    key="num_permanenza",
+                )
+            else:
+                ora_partenza_val = st.time_input(
+                    "🕒 Ora di partenza",
+                    step=300,
+                    key="inp_ora_partenza",
+                )
+            ora_partenza_str = ora_partenza_val.strftime("%H:%M")
+
             strada_label = st.radio(
                 "Preferenza strade",
                 list(PREFERENZE_STRADE.keys()),
@@ -2928,27 +3269,64 @@ with tab_viaggio:
                     unsafe_allow_html=True,
                 )
 
-            p_start = st.slider("% Batteria alla Partenza", 10, 100, 90, 5, key="sld_start")
-            p_colonnina = st.slider(
-                "🔋 % Batteria desiderata all'arrivo in colonnina",
-                5,
-                40,
-                15,
-                1,
-                key="sld_arr_col",
-                help="Sfrutta l'autonomia fino a questa soglia garantendo sempre un Jolly (Piano B) entro il 4% d'emergenza.",
+            # Controlli batteria anti-sfioramento per smartphone (pulsanti - / + con step 5%)
+            c_b1, c_b2 = st.columns(2)
+            p_start = int(
+                c_b1.number_input(
+                    "🔋 % Batteria alla Partenza",
+                    min_value=5,
+                    max_value=100,
+                    value=90,
+                    step=5,
+                    key="num_start",
+                )
             )
-            p_arr_b = st.slider("% Batteria desiderata all'Arrivo (B)", 5, 90, 20, 5, key="sld_arr_b")
+            p_colonnina = int(
+                c_b2.number_input(
+                    "🔌 % Batteria desiderata all'arrivo in colonnina",
+                    min_value=5,
+                    max_value=100,
+                    value=15,
+                    step=5,
+                    key="num_arr_col",
+                    help="Sfrutta l'autonomia fino a questa soglia garantendo sempre un Jolly (Piano B) entro il 4% d'emergenza.",
+                )
+            )
+
             p_home_a = 10
             if andata_ritorno:
-                p_home_a = st.slider(
-                    "% Batteria desiderata al Rientro a Casa (A)",
-                    5,
-                    90,
-                    10,
-                    5,
-                    key="sld_home_a",
-                    help="Utile per rientrare scarichi e ricaricare a casa a basso costo.",
+                c_b3, c_b4 = st.columns(2)
+                p_arr_b = int(
+                    c_b3.number_input(
+                        "🏁 % Minima all'Arrivo (B)",
+                        min_value=5,
+                        max_value=100,
+                        value=20,
+                        step=5,
+                        key="num_arr_b",
+                    )
+                )
+                p_home_a = int(
+                    c_b4.number_input(
+                        "🏠 % Minima al Rientro a Casa (A)",
+                        min_value=5,
+                        max_value=100,
+                        value=10,
+                        step=5,
+                        key="num_home_a",
+                        help="Utile per rientrare scarichi e ricaricare a casa a basso costo.",
+                    )
+                )
+            else:
+                p_arr_b = int(
+                    st.number_input(
+                        "🏁 % Minima all'Arrivo (B)",
+                        min_value=5,
+                        max_value=100,
+                        value=20,
+                        step=5,
+                        key="num_arr_b",
+                    )
                 )
 
             # --- STEP 3: Rete, Operatore e Stile di Sosta ---
@@ -3029,8 +3407,8 @@ with tab_viaggio:
                                 st.error("Impossibile calcolare uno dei due percorsi tramite OSRM.")
                                 st.stop()
 
-                            all_ch_a, km1_a, tot_km_a, tot_dur_a = res_auto
-                            all_ch_b, km1_b, tot_km_b, tot_dur_b = res_no
+                            all_ch_a, km1_a, tot_km_a, tot_dur_a, dur1_a, dur2_a = res_auto
+                            all_ch_b, km1_b, tot_km_b, tot_dur_b, dur1_b, dur2_b = res_no
 
                             sol_a, _, _ = genera_soluzioni_confronto(
                                 all_ch=all_ch_a,
@@ -3075,18 +3453,20 @@ with tab_viaggio:
                             kwh_b = round((tot_km_b / 100.0) * cons_extra, 1)
                             sol_a.update({
                                 "km1": km1_a, "tot_km": tot_km_a, "tot_dur": tot_dur_a,
+                                "dur1": dur1_a, "dur2": dur2_a,
                                 "cons_eff": cons_eff, "kwh_totali": kwh_a,
                                 "km_per_pct": km_per_pct, "all_ch": all_ch_a,
                                 "tipo_strada": "🛣️ Con Autostrada",
                             })
                             sol_b.update({
                                 "km1": km1_b, "tot_km": tot_km_b, "tot_dur": tot_dur_b,
+                                "dur1": dur1_b, "dur2": dur2_b,
                                 "cons_eff": cons_extra, "kwh_totali": kwh_b,
                                 "km_per_pct": km_per_pct_extra, "all_ch": all_ch_b,
                                 "tipo_strada": "🚗 Senza Autostrada (Statali)",
                             })
 
-                            km1, tot_km, tot_dur = km1_a, tot_km_a, tot_dur_a
+                            km1, tot_km, tot_dur, dur1, dur2 = km1_a, tot_km_a, tot_dur_a, dur1_a, dur2_a
                             cons_eff_viaggio, km_per_pct_viaggio, kwh_totali = cons_eff, km_per_pct, kwh_a
                             all_ch = all_ch_a
                             desc_a = "🛣️ Con Autostrada"
@@ -3099,7 +3479,7 @@ with tab_viaggio:
                                 st.error("Impossibile calcolare il percorso stradale tramite OSRM.")
                                 st.stop()
 
-                            all_ch, km1, tot_km, tot_dur = res_rt
+                            all_ch, km1, tot_km, tot_dur, dur1, dur2 = res_rt
                             cons_eff_viaggio = cons_extra if evita_auto else cons_eff
                             km_per_pct_viaggio = km_per_pct_extra if evita_auto else km_per_pct
                             kwh_totali = round((tot_km / 100.0) * cons_eff_viaggio, 1)
@@ -3128,8 +3508,12 @@ with tab_viaggio:
                             )
                             tipo_txt = "🚗 Senza Autostrada (Statali)" if evita_auto else "🛣️ Con Autostrada"
                             sol_a["tipo_strada"] = tipo_txt
+                            sol_a["dur1"] = dur1
+                            sol_a["dur2"] = dur2
                             if sol_b is not None:
                                 sol_b["tipo_strada"] = tipo_txt
+                                sol_b["dur1"] = dur1
+                                sol_b["dur2"] = dur2
                             desc_a = "Consigliata — Meno tempo/soste"
 
                         calc_id = st.session_state.get("calc_counter", 0) + 1
@@ -3147,6 +3531,12 @@ with tab_viaggio:
                             "km1": km1,
                             "tot_km": tot_km,
                             "tot_dur": tot_dur,
+                            "dur1": dur1,
+                            "dur2": dur2,
+                            "ora_partenza": ora_partenza_str,
+                            "ore_permanenza": float(ore_permanenza),
+                            "costo_casa_kwh": float(costo_casa_kwh),
+                            "costo_col_kwh": float(costo_col_kwh),
                             "cons_eff": cons_eff_viaggio,
                             "kwh_totali": kwh_totali,
                             "km_per_pct": km_per_pct_viaggio,
