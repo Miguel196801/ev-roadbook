@@ -3055,6 +3055,83 @@ if not st.session_state.get("auth_user"):
 
 current_user = st.session_state["auth_user"]
 
+# Scelta guidata obbligatoria al primo accesso dopo il Login sull'operatore/abbonamento preferito
+if not st.session_state.get("operatore_configurato", False):
+    st.markdown(
+        '<div class="ev-hero">'
+        '<div class="ev-hero-title">⚡ EV Roadbook Italia</div>'
+        '<div class="ev-hero-sub">Configurazione rapida iniziale • Pianificazione guidata Mobile-First</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="ev-card" style="border-left-color:#10B981; padding:18px 20px;">'
+        f'<div class="ev-card-title" style="font-size:1.12rem; margin-bottom:8px;">'
+        f'👋 Benvenuto {html.escape(current_user)}! Prima di iniziare...'
+        f'</div>'
+        f'<div class="ev-card-sub" style="font-size:0.93rem; color:#CBD5E1; line-height:1.45;">'
+        f'Hai un abbonamento o un operatore di ricarica preferito (es. Ionity, Enel X, Be Charge, Tesla) '
+        f'oppure vuoi usare tutte le colonnine veloci disponibili?'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    opzioni_onboarding = [
+        "🌐 Nessuno (usa tutte le colonnine veloci)",
+        "⚡ Atlante",
+        "🔌 Be Charge / Plenitude",
+        "🔌 Enel X",
+        "⚡ Ewiva",
+        "⚡ Free To X",
+        "⚡ Ionity",
+        "🏔️ Neogy",
+        "🔴 Tesla Supercharger",
+        "✍️ Altro marchio...",
+    ]
+    scelta_onb = st.selectbox(
+        "🏢 Operatore / Abbonamento preferito",
+        opzioni_onboarding,
+        index=0,
+        key="sel_onboarding_op",
+    )
+    custom_onb = ""
+    if "Altro" in scelta_onb:
+        custom_onb = st.text_input(
+            "Scrivi il nome del tuo operatore / marchio",
+            placeholder="Es. Electra, Alperia, A2A, Duferco...",
+            key="inp_onboarding_op_custom",
+        )
+
+    if st.button("✅ Conferma e Vai all'App", type="primary", use_container_width=True, key="btn_conferma_onboarding"):
+        if scelta_onb.startswith("🌐"):
+            op_target = OPERATORI_OPZIONI[0]
+            op_custom_target = ""
+            rete_target = "tutte"
+            rabbocco_target = False
+        elif "Altro" in scelta_onb:
+            op_target = OPERATORI_OPZIONI[-1]
+            op_custom_target = custom_onb.strip()
+            rete_target = "operatore" if op_custom_target else "tutte"
+            rabbocco_target = bool(op_custom_target)
+        else:
+            op_target = scelta_onb if scelta_onb in OPERATORI_OPZIONI else OPERATORI_OPZIONI[0]
+            op_custom_target = ""
+            rete_target = "operatore"
+            rabbocco_target = True
+
+        st.session_state["default_operatore"] = op_target
+        st.session_state["default_operatore_custom"] = op_custom_target
+        st.session_state["default_rete"] = rete_target
+        st.session_state["sel_operatore"] = op_target
+        st.session_state["inp_operatore_custom"] = op_custom_target
+        st.session_state["rad_rete"] = rete_target
+        st.session_state["chk_rabbocco_ads"] = rabbocco_target
+        st.session_state["operatore_configurato"] = True
+        st.rerun()
+
+    st.stop()
+
 _db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "colonnine_it.json")
 _db_mtime = os.path.getmtime(_db_file) if os.path.exists(_db_file) else 0.0
 db = load_chargers_db(_db_mtime, filtro_ver=2)
@@ -3065,8 +3142,9 @@ if st.session_state.pop("reset_nuovo_viaggio", False):
     st.session_state["cfg_expanded"] = True
     st.session_state["inp_orig"] = ""
     st.session_state["inp_dest"] = ""
-    st.session_state["inp_operatore_custom"] = ""
-    st.session_state["sel_operatore"] = OPERATORI_OPZIONI[0]
+    st.session_state["sel_operatore"] = st.session_state.get("default_operatore", OPERATORI_OPZIONI[0])
+    st.session_state["inp_operatore_custom"] = st.session_state.get("default_operatore_custom", "")
+    st.session_state["rad_rete"] = st.session_state.get("default_rete", "tutte")
     st.session_state["inp_ora_partenza"] = ora_corrente_italia_arrotondata()
     st.session_state.pop("roadbook_res", None)
     for k in list(st.session_state.keys()):
@@ -3131,7 +3209,12 @@ with tab_viaggio:
             # Aggiorna il default della checkbox rabbocco veloce AdS quando cambia l'auto selezionata
             if st.session_state.get("last_auto_sel") != scelta_auto:
                 st.session_state["last_auto_sel"] = scelta_auto
-                st.session_state["chk_rabbocco_ads"] = "Model Y" in scelta_auto
+                if "chk_rabbocco_ads" not in st.session_state:
+                    st.session_state["chk_rabbocco_ads"] = ("Model Y" in scelta_auto) or (
+                        st.session_state.get("default_rete") == "operatore"
+                    )
+                elif "Model Y" in scelta_auto:
+                    st.session_state["chk_rabbocco_ads"] = True
 
             custom_bat, custom_cons, custom_dc = 60.0, 18.0, 120
             if "Altra Auto" in scelta_auto:
@@ -3822,7 +3905,23 @@ with _col_out_l:
     st.caption(f"Accesso attivo: {current_user}")
 with _col_out_r:
     if st.button("🚪 Esci", key="btn_logout_ev", use_container_width=True):
-        for chiave in ("auth_user", "roadbook_res", "zona_res", "mostra_cfg", "cfg_expanded", "sel_auto", "last_auto_sel"):
+        for chiave in (
+            "auth_user",
+            "operatore_configurato",
+            "default_operatore",
+            "default_operatore_custom",
+            "default_rete",
+            "sel_operatore",
+            "inp_operatore_custom",
+            "rad_rete",
+            "chk_rabbocco_ads",
+            "roadbook_res",
+            "zona_res",
+            "mostra_cfg",
+            "cfg_expanded",
+            "sel_auto",
+            "last_auto_sel",
+        ):
             st.session_state.pop(chiave, None)
         for chiave in list(st.session_state.keys()):
             if str(chiave).startswith("sel_alt_"):
