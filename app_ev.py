@@ -2694,7 +2694,7 @@ if not st.session_state.get("auth_user"):
         '</div>',
         unsafe_allow_html=True,
     )
-    with st.form("form_login_ev", clear_on_submit=False):
+    with st.form("login_form", clear_on_submit=False):
         st.markdown(
             '<div class="ev-card-title" style="margin-bottom: 4px;">🔐 Accedi al Roadbook</div>'
             '<div class="ev-card-sub" style="margin-bottom: 12px;">Inserisci nome utente e password per iniziare.</div>',
@@ -2703,15 +2703,17 @@ if not st.session_state.get("auth_user"):
         utente_inp = st.text_input(
             "👤 Utente",
             placeholder="Es. Fabio",
+            autocomplete="username",
             key="login_utente_inp",
         )
         password_inp = st.text_input(
             "🔑 Password",
             type="password",
             placeholder="Inserisci la password",
+            autocomplete="current-password",
             key="login_password_inp",
         )
-        submit_login = st.form_submit_button("🚀 Accedi", type="primary", use_container_width=True)
+        submit_login = st.form_submit_button("🔑 Accedi", type="primary", use_container_width=True)
         if submit_login:
             mappa_lower = {nome.lower(): (nome, pwd) for nome, pwd in utenti_auth.items()}
             chiave_utente = utente_inp.strip().lower()
@@ -2721,6 +2723,34 @@ if not st.session_state.get("auth_user"):
                     st.session_state["auth_user"] = nome_canonico
                     st.rerun()
             st.error("❌ Utente o password non validi. Controlla le credenziali e riprova.")
+
+    # Imposta attributi HTML autocomplete e name per abilitare salvataggio e autocompilazione password su browser/smartphone
+    components.html(
+        """
+        <script>
+            (function() {
+                function impostaAutocompleteLogin() {
+                    var doc = window.parent.document;
+                    var root = doc.querySelector('[data-testid="stForm"]') || doc;
+                    var inpUser = root.querySelector('input[type="text"]');
+                    if (inpUser) {
+                        inpUser.setAttribute("autocomplete", "username");
+                        inpUser.setAttribute("name", "username");
+                    }
+                    var inpPwd = root.querySelector('input[type="password"]');
+                    if (inpPwd) {
+                        inpPwd.setAttribute("autocomplete", "current-password");
+                        inpPwd.setAttribute("name", "password");
+                    }
+                }
+                impostaAutocompleteLogin();
+                setTimeout(impostaAutocompleteLogin, 150);
+                setTimeout(impostaAutocompleteLogin, 500);
+            })();
+        </script>
+        """,
+        height=0,
+    )
 
     if is_fallback_locale:
         st.markdown(
