@@ -189,6 +189,8 @@ AUTO_KIA_ENIRO = "🚙 Kia e-Niro Evolution 2020 (64 kWh)"
 AUTO_TESLA_MY = "🏎️ Tesla Model Y Performance 2023 (75 kWh)"
 AUTO_MAZDA_MX30 = "🚗 Mazda MX-30 Versione Lancio (35.5 kWh)"
 AUTO_BMW_IX40 = "🚙 BMW iX xDrive40 08/2023 (76.6 kWh)"
+AUTO_BMW_IX3_50 = "🚙 BMW iX3 50 xDrive (108.7 kWh • 400 kW)"
+AUTO_BMW_IX5_60 = "🚐 BMW iX5 60 xDrive (141 kWh • 460 kW)"
 AUTO_LEAPMOTOR_B05_STD = "🚗 Leapmotor B05 — 56.2 kWh (Standard)"
 AUTO_LEAPMOTOR_B05_LR = "🚙 Leapmotor B05 — 67.1 kWh (Long Range)"
 AUTO_PERSONALIZZATA = "⚙️ Altra Auto (Personalizzata)"
@@ -198,6 +200,8 @@ AUTO_OPZIONI = [
     AUTO_TESLA_MY,
     AUTO_MAZDA_MX30,
     AUTO_BMW_IX40,
+    AUTO_BMW_IX3_50,
+    AUTO_BMW_IX5_60,
     AUTO_LEAPMOTOR_B05_STD,
     AUTO_LEAPMOTOR_B05_LR,
     AUTO_PERSONALIZZATA,
@@ -298,6 +302,7 @@ UTENTI_FALLBACK_LOCALE = {
     "Luciano": "ev2026",
     "Chiara": "ev2026",
     "Arianna": "ev2026",
+    "Stefano": "ev2026",
 }
 
 
@@ -312,6 +317,8 @@ def opzioni_auto_per_utente(current_user):
         return [AUTO_BMW_IX40, AUTO_PERSONALIZZATA]
     if utente_low == "arianna":
         return [AUTO_LEAPMOTOR_B05_STD, AUTO_LEAPMOTOR_B05_LR, AUTO_PERSONALIZZATA]
+    if utente_low == "stefano":
+        return [AUTO_BMW_IX3_50, AUTO_BMW_IX5_60, AUTO_PERSONALIZZATA]
     return list(AUTO_OPZIONI)
 
 
@@ -805,7 +812,11 @@ def formatta_potenza(kw, is_dc, stalls=1):
     elif kw_int > 0:
         base = f"⚡ {kw_int} kW DC" if is_dc else f"🔌 {kw_int} kW AC"
     else:
-        base = "⚡ Fast DC" if is_dc else "🔌 Quick AC"
+        if is_dc:
+            if stalls > 1:
+                return f"⚡ Fast DC (~50-75 kW • {stalls} stalli)"
+            return "⚡ Fast DC (~50-75 kW)"
+        base = "🔌 Quick AC"
     if stalls > 1:
         return f"{base} ({stalls} stalli)"
     return base
@@ -954,6 +965,24 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "bat_kwh": 71.0,
             "cons_base": 21.5,
             "curva_dc": [(45, 150), (80, 105), (100, 55)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "BMW iX3 50 xDrive" in scelta_auto:
+        return {
+            "nome": "BMW iX3 50 xDrive",
+            "bat_kwh": 108.7,
+            "cons_base": 18.5,
+            "curva_dc": [(50, 380), (80, 240), (100, 90)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "BMW iX5 60 xDrive" in scelta_auto:
+        return {
+            "nome": "BMW iX5 60 xDrive",
+            "bat_kwh": 141.0,
+            "cons_base": 21.5,
+            "curva_dc": [(50, 430), (80, 270), (100, 100)],
             "soc_veloce": 80,
             "is_tesla_car": False,
         }
@@ -1151,40 +1180,175 @@ def project(lat, lon, pts):
     return best_d, best_km
 
 
-@st.cache_data(ttl=86400)
-def geocode(q):
+TIPI_URBANI_CENTRI = ("city", "town", "village", "suburb")
+TIPI_URBANI_COMUNI = ("municipality",)
+TIPI_AREA_VASTA = ("county", "state_district", "province", "state", "region", "country")
+
+
+def _e_query_citta_semplice(query_pulita):
+    """Restituisce il nome della città se la query è un nome semplice di località (senza via o civico)."""
+    if not query_pulita:
+        return None
+    senza_paese = re.sub(r",?\s*(italia|italy)\s*$", "", query_pulita, flags=re.IGNORECASE).strip(" ,")
+    if not senza_paese or "," in senza_paese:
+        return None
+    if any(ch.isdigit() for ch in senza_paese):
+        return None
+    parole = senza_paese.lower().split()
+    if not parole or len(parole) > 4:
+        return None
+    prefissi_strada = (
+        "via", "viale", "piazza", "piazzale", "corso", "largo", "vicolo",
+        "strada", "lungomare", "lungotevere", "contrada", "localita", "località",
+        "stazione", "aeroporto", "uscita", "casello",
+    )
+    if parole[0] in prefissi_strada:
+        return None
+    return senza_paese
+
+
+def _rank_risultato_urbano(loc):
     """
-    Geocodifica una località italiana tramite Photon con fallback su Nominatim.
-    Se la query non contiene già 'italia' o 'italy', prova prima '{q.strip()}, Italia'
-    e come fallback la query originale. Restituisce (lat, lon, indirizzo) oppure None.
+    Assegna un punteggio di priorità (più basso = migliore) per preferire i centri urbani
+    (city, town, village, suburb, municipality) rispetto ad aree provinciali/regionali
+    (county, state_district, province, state, region).
+    """
+    raw = getattr(loc, "raw", None) or {}
+    props = raw.get("properties") if isinstance(raw.get("properties"), dict) else {}
+    addr_type = str(raw.get("addresstype") or "").strip().lower()
+    osm_type = str(raw.get("type") or props.get("type") or "").strip().lower()
+    osm_val = str(props.get("osm_value") or "").strip().lower()
+
+    if addr_type in TIPI_URBANI_CENTRI or (not addr_type and (osm_type in TIPI_URBANI_CENTRI or osm_val in TIPI_URBANI_CENTRI)):
+        rank = 0
+    elif addr_type in TIPI_URBANI_COMUNI or (not addr_type and (osm_type in TIPI_URBANI_COMUNI or osm_val in TIPI_URBANI_COMUNI)):
+        rank = 1
+    elif addr_type in TIPI_AREA_VASTA or osm_type in TIPI_AREA_VASTA or osm_val in TIPI_AREA_VASTA:
+        rank = 3
+    else:
+        rank = 2
+
+    try:
+        importanza = float(raw.get("importance") or 0.0)
+    except Exception:
+        importanza = 0.0
+    return rank, -importanza
+
+
+def _scegli_miglior_loc_urbano(risultati):
+    """Seleziona il miglior risultato da una lista geopy dando precedenza al centro urbano."""
+    if not risultati:
+        return None
+    if not isinstance(risultati, list):
+        risultati = [risultati]
+    migliore = min(enumerate(risultati), key=lambda coppia: (_rank_risultato_urbano(coppia[1]), coppia[0]))
+    return migliore[1]
+
+
+def _formatta_loc_geopy(loc, fallback_query):
+    """Estrae (lat, lon, indirizzo_breve) da un risultato Location di geopy."""
+    raw_addr = getattr(loc, "address", None) or fallback_query
+    parti = [p.strip() for p in str(raw_addr).split(",") if p.strip()]
+    indirizzo_breve = ", ".join(parti[:3]) if parti else str(raw_addr)
+    return float(loc.latitude), float(loc.longitude), indirizzo_breve
+
+
+@st.cache_data(ttl=86400)
+def geocode_zona(q):
+    """
+    Geocodifica una località italiana per la Ricerca Colonnine in Zona centrando il punto
+    sul centro urbano della città (city, town, village, suburb, municipality) anziché
+    sul centro geometrico della provincia (county, state_district).
     """
     query_pulita = str(q).strip()
     if not query_pulita:
         return None
+
+    nom = Nominatim(user_agent="ev_roadbook_it_2026", timeout=10)
+    nome_citta = _e_query_citta_semplice(query_pulita)
+    fallback_area_vasta = None
+
+    # 1) Se è un nome semplice di città (es. "Bolzano"), interroga Nominatim con parametro strutturato 'city'
+    if nome_citta:
+        try:
+            res_city = nom.geocode(
+                {"city": nome_citta, "country": "Italia"},
+                exactly_one=False,
+                limit=6,
+                addressdetails=True,
+            )
+            best_city = _scegli_miglior_loc_urbano(res_city)
+            if best_city is not None:
+                rank_c, _ = _rank_risultato_urbano(best_city)
+                if rank_c <= 2:
+                    return _formatta_loc_geopy(best_city, query_pulita)
+                fallback_area_vasta = best_city
+        except Exception:
+            pass
+
     q_low = query_pulita.lower()
     tentativi = []
     if "italia" not in q_low and "italy" not in q_low:
         tentativi.append(f"{query_pulita}, Italia")
     tentativi.append(query_pulita)
 
+    # 2) Ricerca Nominatim multi-risultato con filtro prioritario per centro urbano
     for query in tentativi:
-        for cls in (Photon, Nominatim):
-            try:
-                loc = cls(user_agent="ev_roadbook_it_2026", timeout=10).geocode(query)
-                if loc:
-                    raw_addr = getattr(loc, "address", None) or query
-                    parti = [p.strip() for p in str(raw_addr).split(",") if p.strip()]
-                    indirizzo_breve = ", ".join(parti[:3]) if parti else str(raw_addr)
-                    return float(loc.latitude), float(loc.longitude), indirizzo_breve
-            except Exception:
-                pass
+        try:
+            res_nom = nom.geocode(query, exactly_one=False, limit=8, addressdetails=True)
+            best_nom = _scegli_miglior_loc_urbano(res_nom)
+            if best_nom is not None:
+                rank_n, _ = _rank_risultato_urbano(best_nom)
+                if rank_n <= 2:
+                    return _formatta_loc_geopy(best_nom, query)
+                if fallback_area_vasta is None:
+                    fallback_area_vasta = best_nom
+        except Exception:
+            pass
+
+    # 3) Fallback Photon multi-risultato con lo stesso filtro urbano
+    ph = Photon(user_agent="ev_roadbook_it_2026", timeout=10)
+    for query in tentativi:
+        try:
+            res_ph = ph.geocode(query, exactly_one=False, limit=6)
+            best_ph = _scegli_miglior_loc_urbano(res_ph)
+            if best_ph is not None:
+                rank_p, _ = _rank_risultato_urbano(best_ph)
+                if rank_p <= 2:
+                    return _formatta_loc_geopy(best_ph, query)
+                if fallback_area_vasta is None:
+                    fallback_area_vasta = best_ph
+        except Exception:
+            pass
+
+    if fallback_area_vasta is not None:
+        return _formatta_loc_geopy(fallback_area_vasta, query_pulita)
     return None
+
+
+@st.cache_data(ttl=86400)
+def geocode(q):
+    """
+    Geocodifica una località italiana preferendo il centro urbano della città rispetto
+    al baricentro provinciale, con fallback su Photon/Nominatim.
+    Restituisce (lat, lon, indirizzo) oppure None.
+    """
+    return geocode_zona(q)
 
 
 def url_gmaps_colonnine_indirizzo(indirizzo_cercato):
     """Genera l'URL Google Maps con query testuale codificata sull'indirizzo cercato."""
     query = quote_plus(f"colonnine ricarica elettrica vicino {str(indirizzo_cercato).strip()}")
     return f"https://www.google.com/maps/search/?api=1&query={query}"
+
+
+def url_gmaps_stazione(nome_colonnina, lat, lon):
+    """
+    Genera l'URL ufficiale Google Maps puntando sempre alle coordinate GPS esatte della colonnina,
+    così il navigatore arriva al metro davanti agli stalli senza omonimie di uffici o marchi.
+    """
+    _ = nome_colonnina
+    return f"https://www.google.com/maps/search/?api=1&query={float(lat):.5f},{float(lon):.5f}"
 
 
 def url_gmaps_viaggio_multi_tappa(origine, destinazione, soste_tratta):
@@ -1267,7 +1431,7 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=10.0):
                 "food_name": food_name,
                 "mall_name": mall_name,
                 "Distanza": round(dist, 1),
-                "Maps": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                "Maps": url_gmaps_stazione(titolo, lat, lon),
             }
         )
 
@@ -1296,6 +1460,7 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=10.0):
     for d in dest_c:
         d["Potenza"] = formatta_potenza(d["kw"], bool(d["is_dc"]), d["stalls"])
         d["eff_kw"] = stima_kw_effettivi(d["kw"], bool(d["is_dc"]), d["Stazione"], bool(d.get("in_ads")))
+        d["Maps"] = url_gmaps_stazione(d["Stazione"], d["lat"], d["lon"])
 
     return dest_c
 
@@ -1323,7 +1488,7 @@ def trova_colonnina_piu_vicina(db, centro_lat, centro_lon):
                 "mall_name": mall_name,
                 "Potenza": formatta_potenza(kw, bool(dc_flag), 1),
                 "Distanza": round(dist, 1),
-                "Maps": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                "Maps": url_gmaps_stazione(titolo, lat, lon),
             }
     return migliore
 
@@ -1434,7 +1599,7 @@ def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_au
                 "has_mall": has_mall,
                 "food_name": food_name,
                 "mall_name": mall_name,
-                "Maps": f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+                "Maps": url_gmaps_stazione(titolo, lat, lon),
             }
         )
 
@@ -1472,6 +1637,7 @@ def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_au
     for r in route_c:
         r["Potenza"] = formatta_potenza(r["kw"], True, r["stalls"])
         r["eff_kw"] = stima_kw_effettivi(r["kw"], True, r["Stazione"], r["in_ads"])
+        r["Maps"] = url_gmaps_stazione(r["Stazione"], r["lat"], r["lon"])
 
     return route_c
 
@@ -2677,28 +2843,39 @@ def genera_soluzioni_confronto(
     return sol_a, sol_b, desc_b
 
 
-def costruisci_badge_locali(lat, lon, has_food, has_mall):
-    """Genera i badge HTML cliccabili verso Google Maps API per Ristorante e Centro Commerciale."""
+def url_gmaps_poi(nome_poi, lat, lon, categoria_poi=""):
+    """Genera l'URL ufficiale Google Maps con categoria, nome reale del POI/locale e coordinate esatte."""
+    nome_pulito = str(nome_poi or "").strip()
+    cat_pulita = str(categoria_poi or "").strip()
+    coords = f"{float(lat):.5f},{float(lon):.5f}"
+    if nome_pulito and nome_pulito not in (FALLBACK_FOOD_NAME, FALLBACK_MALL_NAME):
+        if cat_pulita and cat_pulita.lower() not in nome_pulito.lower():
+            query_testo = f"{cat_pulita} {nome_pulito} {coords}"
+        else:
+            query_testo = f"{nome_pulito} {coords}"
+    elif cat_pulita:
+        query_testo = f"{cat_pulita} {coords}"
+    else:
+        query_testo = coords
+    return f"https://www.google.com/maps/search/?api=1&query={quote(query_testo)}"
+
+
+def costruisci_badge_locali(lat, lon, has_food, has_mall, food_name="", mall_name=""):
+    """Genera i badge HTML cliccabili verso Google Maps per Ristorante e Centro Commerciale."""
     badges = []
     if has_food:
-        url_food = html.escape(
-            f"https://www.google.com/maps/search/?api=1&query=ristorante+{lat},{lon}",
-            quote=True,
-        )
+        url_food = html.escape(url_gmaps_poi(food_name, lat, lon, categoria_poi="ristorante"), quote=True)
         badges.append(
             f'<a class="ev-badge ev-b-blue ev-badge-link" href="{url_food}" '
             f'target="_blank" rel="noopener noreferrer" '
-            f'title="Cerca ristoranti vicini su Google Maps">🍽️ Ristorante</a>'
+            f'title="Apri su Google Maps">🍽️ Ristorante</a>'
         )
     if has_mall:
-        url_mall = html.escape(
-            f"https://www.google.com/maps/search/?api=1&query=supermercato+centro+commerciale+{lat},{lon}",
-            quote=True,
-        )
+        url_mall = html.escape(url_gmaps_poi(mall_name, lat, lon, categoria_poi="centro commerciale"), quote=True)
         badges.append(
             f'<a class="ev-badge ev-b-purple ev-badge-link" href="{url_mall}" '
             f'target="_blank" rel="noopener noreferrer" '
-            f'title="Cerca supermercati e centri commerciali vicini su Google Maps">🛒 Centro Comm.</a>'
+            f'title="Apri su Google Maps">🛒 Centro Comm.</a>'
         )
     return badges
 
@@ -3259,10 +3436,7 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
     nomi_coincidenti = bool(food_pulito and mall_pulito and food_pulito.lower() == mall_pulito.lower())
 
     if food_pulito:
-        url_food = html.escape(
-            f"https://www.google.com/maps/search/?api=1&query=ristorante+{lat},{lon}",
-            quote=True,
-        )
+        url_food = html.escape(url_gmaps_poi(food_pulito, lat, lon, categoria_poi="ristorante"), quote=True)
         righe.append(
             f'<div class="ev-kv">'
             f'<span class="ev-k">🍽️ Vicino a</span>'
@@ -3271,10 +3445,7 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
             f'</div>'
         )
     if mall_pulito and not nomi_coincidenti:
-        url_mall = html.escape(
-            f"https://www.google.com/maps/search/?api=1&query=supermercato+centro+commerciale+{lat},{lon}",
-            quote=True,
-        )
+        url_mall = html.escape(url_gmaps_poi(mall_pulito, lat, lon, categoria_poi="centro commerciale"), quote=True)
         righe.append(
             f'<div class="ev-kv">'
             f'<span class="ev-k">🛒 Vicino a</span>'
@@ -3451,7 +3622,7 @@ def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, tot_km_sol=None, 
     tratta = html.escape(sosta["Tratta"])
     nota_pos = html.escape(sosta["Note"])
     potenza = html.escape(sosta["Potenza"])
-    maps_url = html.escape(sosta["Maps"], quote=True)
+    maps_url = html.escape(url_gmaps_stazione(sosta["Stazione"], sosta["lat"], sosta["lon"]), quote=True)
 
     e_ritorno = bool(sosta.get("e_ritorno"))
     dest_nome = html.escape(res["dest"]) if res else "destinazione"
@@ -3473,6 +3644,8 @@ def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, tot_km_sol=None, 
             sosta["lon"],
             1 if food_name else 0,
             1 if mall_name else 0,
+            food_name=food_name,
+            mall_name=mall_name,
         )
     )
 
@@ -3682,7 +3855,7 @@ def render_card_colonnina_generica(item, mostra_km=False, km1_offset=0.0, dest_n
     """Renderizza una colonnina (Cerca in Zona o Modalità Esperto) in formato Dark Card compatto."""
     nome = html.escape(item["Stazione"])
     potenza = html.escape(item["Potenza"])
-    maps_url = html.escape(item["Maps"], quote=True)
+    maps_url = html.escape(url_gmaps_stazione(item["Stazione"], item["lat"], item["lon"]), quote=True)
     fascia = classifica_fascia_potenza(item)
     is_hyper = fascia == "hyper"
     is_hpc = fascia == "hpc"
@@ -3707,6 +3880,8 @@ def render_card_colonnina_generica(item, mostra_km=False, km1_offset=0.0, dest_n
             item["lon"],
             1 if food_name else 0,
             1 if mall_name else 0,
+            food_name=food_name,
+            mall_name=mall_name,
         )
     )
 
@@ -4927,7 +5102,7 @@ with tab_zona:
     raggio_zona = st.slider(
         "Raggio di ricerca (km)",
         min_value=2,
-        max_value=20,
+        max_value=30,
         value=10,
         step=1,
         key="sld_zona_raggio",
@@ -4961,7 +5136,7 @@ with tab_zona:
             st.warning("Inserisci una città o un indirizzo valido.")
         else:
             with st.spinner(f"Ricerca colonnine entro {raggio_zona} km da {localita_zona.strip()}..."):
-                geo_z = geocode(localita_zona.strip())
+                geo_z = geocode_zona(localita_zona.strip())
                 if not geo_z:
                     st.error("Località non trovata. Prova a specificare meglio città o provincia.")
                 else:
