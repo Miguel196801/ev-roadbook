@@ -15,7 +15,7 @@ import math
 import os
 import re
 import struct
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 import zlib
 try:
     from zoneinfo import ZoneInfo
@@ -280,8 +280,16 @@ PREFERENZE_STRADE = {
 
 FATTORE_CONSUMO_EXTRAURBANO = 0.84  # Riduzione consumo -16% su statali/extraurbano rispetto all'autostrada
 COSTO_PEDAGGIO_KM = 0.078  # Stima media pedaggio autostradale italiano (€/km)
-TETTO_RICARICA_INTERMEDIA = 80  # Tetto massimo ricarica intermedia (evita fase lenta 80%-100%)
-SOGLIA_EMERGENZA_JOLLY = 4.0  # Soglia minima di emergenza (%) per il calcolo del Jolly (Piano B)
+TETTO_RICARICA_INTERMEDIA = 80  # Soglia base ricarica veloce (prima del rallentamento 80%-100%)
+TETTO_SOSTA_UNICA_OTTIMALE = 90  # Massimo assoluto per sosta unica quando conviene sul tempo totale
+MINUTI_FISSI_SOSTA_EXTRA = 7  # Minuti fissi di manovra/ingresso/uscita per una seconda sosta
+SOGLIA_COLONNINA_LENTA_KW = 65.0  # Potenza massima (kW) per considerare una colonnina lenta nel Rabbocco Ponte
+SOGLIA_AUTO_VELOCE_KW = 100.0  # Picco DC minimo (kW) dell'auto per attivare il Rabbocco Ponte verso HPC
+SOGLIA_HPC_VELOCE_KW = 150.0  # Potenza minima (kW) della stazione Ultra-Fast/HPC successiva
+SOGLIA_ARRIVO_HPC_PONTE = 10.0  # Batteria residua minima (%) richiesta all'arrivo sulla stazione HPC
+RISPARMIO_MINIMO_PONTE_MIN = 5  # Risparmio netto minimo (minuti) richiesto per preferire Rabbocco Ponte + HPC
+SOGLIA_EMERGENZA_JOLLY = 4.0  # Soglia ordinaria di sicurezza (%) per Piano B Livello 1 e Livello 2
+SOGLIA_EMERGENZA_ESTREMA_JOLLY = 1.0  # Soglia estrema (%) per Piano B Livello 3 con avviso esplicito sui rischi
 KEYWORDS_EBIKE = ("biciclett", "bici", "ebike", "e-bike", "bike")
 UTENTI_FALLBACK_LOCALE = {
     "Fabio": "ev2026",
@@ -815,12 +823,55 @@ def stima_kw_effettivi(kw, is_dc, titolo, in_ads):
     return 22.0
 
 
+def classifica_fascia_potenza(item):
+    """
+    Classifica una colonnina in quattro fasce di velocità:
+      - 'hyper': Hyper-Fast (>= 400 kW)
+      - 'hpc': Ultra-Fast / HPC (150 – 399 kW, inclusi brand HPC noti senza tag kW su OSM)
+      - 'fast': Fast DC (50 – 149 kW o DC senza tag kW)
+      - 'lenta': Lente / AC (< 50 kW)
+    """
+    kw_dich = float(item.get("kw") or 0.0)
+    if kw_dich > 0.0:
+        if kw_dich >= 400.0:
+            return "hyper"
+        if kw_dich >= 150.0:
+            return "hpc"
+        if kw_dich >= 50.0:
+            return "fast"
+        return "lenta"
+    eff_kw = float(
+        item.get("eff_kw")
+        or stima_kw_effettivi(
+            0.0,
+            bool(item.get("is_dc")),
+            str(item.get("Stazione") or ""),
+            bool(item.get("in_ads")),
+        )
+    )
+    if eff_kw >= 400.0:
+        return "hyper"
+    if eff_kw >= 150.0:
+        return "hpc"
+    if bool(item.get("is_dc")) or eff_kw >= 50.0:
+        return "fast"
+    return "lenta"
+
+
 def potenza_curva_auto(auto_cfg, soc_pct):
     """Restituisce la potenza massima di ricarica DC dell'auto alla percentuale di batteria indicata."""
     for soglia, kw in auto_cfg["curva_dc"]:
         if soc_pct <= soglia:
             return float(kw)
     return float(auto_cfg["curva_dc"][-1][1])
+
+
+def potenza_picco_auto(auto_cfg):
+    """Restituisce la potenza massima di picco DC (kW) supportata dall'auto selezionata."""
+    curva = auto_cfg.get("curva_dc") or []
+    if not curva:
+        return 0.0
+    return max(float(kw) for _, kw in curva)
 
 
 def calcola_minuti_ricarica(auto_cfg, soc_inizio, soc_fine, station_kw):
@@ -1190,10 +1241,10 @@ def calcola_percorso_osrm(p1, p2, evita_autostrade=False):
     return coords, dur, False
 
 
-def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
+def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=10.0):
     """Estrae e raggruppa tutte le colonnine auto (AC e DC, escludendo e-bike) entro raggio_km."""
     raw_dest = []
-    for lat, lon, titolo, kw, is_dc, has_food, has_mall, food_name, mall_name, _in_ads_db in db:
+    for lat, lon, titolo, kw, is_dc, has_food, has_mall, food_name, mall_name, in_ads_db in db:
         if e_colonnina_ebike(titolo):
             continue
         dist = haversine_km(lat, lon, centro_lat, centro_lon)
@@ -1210,6 +1261,7 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
                 "Stazione": titolo,
                 "kw": kw,
                 "is_dc": int(is_dc or is_tesla or is_brand_hpc or kw >= 50),
+                "in_ads": bool(int(in_ads_db or 0) == 1),
                 "has_food": has_food,
                 "has_mall": has_mall,
                 "food_name": food_name,
@@ -1228,6 +1280,7 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
                 ex["stalls"] += 1
                 ex["kw"] = max(ex["kw"], item["kw"])
                 ex["is_dc"] = max(ex["is_dc"], item["is_dc"])
+                ex["in_ads"] = bool(ex["in_ads"] or item["in_ads"])
                 ex["has_food"] = max(ex["has_food"], item["has_food"])
                 ex["has_mall"] = max(ex["has_mall"], item["has_mall"])
                 ex["food_name"] = _scegli_nome_poi_migliore(ex["food_name"], item["food_name"], FALLBACK_FOOD_NAME)
@@ -1242,6 +1295,7 @@ def cerca_colonnine_zona(db, centro_lat, centro_lon, raggio_km=5.0):
 
     for d in dest_c:
         d["Potenza"] = formatta_potenza(d["kw"], bool(d["is_dc"]), d["stalls"])
+        d["eff_kw"] = stima_kw_effettivi(d["kw"], bool(d["is_dc"]), d["Stazione"], bool(d.get("in_ads")))
 
     return dest_c
 
@@ -1281,7 +1335,7 @@ def e_nome_area_di_servizio(titolo_low):
     return bool(re.search(r"\bads\b", titolo_low))
 
 
-def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_autostrade=False):
+def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_autostrade=False, km_min=3.0):
     """Estrae e raggruppa le colonnine rapide lungo la tratta stradale."""
     raw_route = []
     lats = [p for p, _, _ in pts]
@@ -1319,7 +1373,7 @@ def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_au
             continue
 
         d_rt, km = project(lat, lon, pts)
-        if km < 3.0 or d_rt > 2.5:
+        if km < km_min or d_rt > 3.0:
             continue
 
         # Classificazione AdS rigorosa (nessun fallback basato solo sulla distanza):
@@ -1440,7 +1494,14 @@ def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=Fa
     else:
         km1 = km1_base
 
-    ch1 = analizza_colonnine_tratta(db, pts1, "➡️ Andata", offset_km=0.0, evita_autostrade=evita_autostrade)
+    ch1 = analizza_colonnine_tratta(
+        db,
+        pts1,
+        "➡️ Andata",
+        offset_km=0.0,
+        evita_autostrade=evita_autostrade,
+        km_min=1.0,
+    )
     all_ch, tot_km, tot_dur = list(ch1), km1, dur1
     dur2 = 0
 
@@ -1490,16 +1551,177 @@ def match_operatore_kw(stazione, keywords):
     return any(kw in nome_low for kw in keywords)
 
 
+def conviene_sosta_unica_oltre_80(
+    auto_cfg,
+    stazione,
+    arr_pct,
+    target_unico,
+    next_ch,
+    km_per_pct,
+    km_target_fine,
+    req_fine,
+    km1=0.0,
+    andata_ritorno=False,
+    p_arr_b=20.0,
+):
+    """
+    Confronta sul tempo totale reale (curva DC dell'auto + 7 min fissi di manovra della sosta extra):
+    - Scenario 1: sosta unica fino a target_unico (max 90%) per chiudere la tratta.
+    - Scenario 2: sosta 1 fino all'80% + 7 min fissi di ingresso/uscita + ricarica alla seconda sosta.
+    Restituisce True se lo Scenario 1 è più veloce o pari allo Scenario 2.
+    """
+    if target_unico <= TETTO_RICARICA_INTERMEDIA:
+        return True
+    if target_unico > TETTO_SOSTA_UNICA_OTTIMALE:
+        return False
+
+    km_s = float(stazione["Km"])
+    t_scenario_1 = calcola_minuti_ricarica(auto_cfg, arr_pct, target_unico, stazione["eff_kw"])
+    t_sosta1_80 = calcola_minuti_ricarica(auto_cfg, arr_pct, TETTO_RICARICA_INTERMEDIA, stazione["eff_kw"])
+
+    max_km_s2 = km_s + max(0.0, (TETTO_RICARICA_INTERMEDIA - 5.0) * km_per_pct)
+    cand_s2 = [c for c in next_ch if km_s + 3.0 < float(c["Km"]) <= max_km_s2]
+    if not cand_s2:
+        # Nessuna seconda colonnina raggiungibile dall'80%: lo Scenario 1 è l'unica scelta valida
+        return True
+
+    miglior_extra_s2 = None
+    for s2 in cand_s2:
+        km_2 = float(s2["Km"])
+        arr_s2 = TETTO_RICARICA_INTERMEDIA - (km_2 - km_s) / km_per_pct
+        if arr_s2 < 5.0:
+            continue
+        need_end_s2 = math.ceil((km_target_fine - km_2) / km_per_pct + req_fine + 1.0)
+        need_b_s2 = (
+            math.ceil((km1 - km_2) / km_per_pct + p_arr_b + 1.0)
+            if (andata_ritorno and km_2 < km1 and km_target_fine >= km1)
+            else 0
+        )
+        target_s2 = max(int(math.ceil(arr_s2 + 2)), need_end_s2, need_b_s2)
+        if target_s2 > 95:
+            continue
+        t_ric_s2 = calcola_minuti_ricarica(auto_cfg, arr_s2, target_s2, s2["eff_kw"])
+        # 7 minuti fissi di ingresso/uscita/manovra + eventuale deviazione extra se fuori casello
+        overhead_s2 = MINUTI_FISSI_SOSTA_EXTRA + max(0, int(s2.get("detour_min", 2)) - 2)
+        t_tot_s2 = overhead_s2 + t_ric_s2
+        if miglior_extra_s2 is None or t_tot_s2 < miglior_extra_s2:
+            miglior_extra_s2 = t_tot_s2
+
+    if miglior_extra_s2 is None:
+        return True
+
+    t_scenario_2 = t_sosta1_80 + miglior_extra_s2
+    return t_scenario_1 <= t_scenario_2
+
+
+def valuta_rabbocco_ponte_hpc(
+    auto_cfg,
+    stazione,
+    arr_pct,
+    target_pieno,
+    pool_avanti,
+    km_per_pct,
+    km_fine_tratta,
+):
+    """
+    Valuta l'ottimizzazione "Rabbocco Ponte" quando un'auto veloce (picco DC >= 100 kW) si ferma
+    su una colonnina lenta (potenza <= 65 kW, es. 50 kW):
+      - Piano 1: ricarica completa fino a target_pieno sulla colonnina lenta.
+      - Piano 2: rabbocco minimo sulla colonnina lenta per raggiungere una stazione Ultra-Fast / HPC
+        (>= 150 kW) lungo la stessa tratta con almeno il 10% di batteria + 7 minuti fissi di manovra
+        sosta extra + ricarica sull'HPC fino alla stessa energia residua equivalente.
+    Se il Piano 2 fa risparmiare almeno 5 minuti netti rispetto al Piano 1, restituisce i dettagli
+    del miglior Rabbocco Ponte; altrimenti restituisce None.
+    """
+    st_kw = float(stazione.get("eff_kw", 0.0))
+    if st_kw > SOGLIA_COLONNINA_LENTA_KW:
+        return None
+    if potenza_picco_auto(auto_cfg) < SOGLIA_AUTO_VELOCE_KW:
+        return None
+    if float(target_pieno) <= float(arr_pct) + 4.0:
+        return None
+
+    km_s = float(stazione["Km"])
+    tratta_s = stazione.get("Tratta")
+    candidati_hpc = [
+        c for c in pool_avanti
+        if float(c.get("eff_kw", 0.0)) >= SOGLIA_HPC_VELOCE_KW
+        and km_s + 3.0 < float(c["Km"]) < float(km_fine_tratta) - 1.0
+        and (not tratta_s or c.get("Tratta") == tratta_s)
+    ]
+    if not candidati_hpc:
+        return None
+
+    t_piano_1 = calcola_minuti_ricarica(auto_cfg, arr_pct, target_pieno, st_kw)
+    migliore = None
+
+    for hpc in candidati_hpc:
+        km_hpc = float(hpc["Km"])
+        dist_hpc = km_hpc - km_s
+        consumo_tratto_pct = dist_hpc / km_per_pct
+
+        # Rabbocco minimo sulla colonnina lenta per arrivare all'HPC con almeno il 10% di batteria
+        target_ponte = max(
+            int(math.ceil(float(arr_pct) + 2.0)),
+            int(math.ceil(consumo_tratto_pct + SOGLIA_ARRIVO_HPC_PONTE)),
+        )
+        if target_ponte >= int(target_pieno) - 2 or target_ponte > TETTO_RICARICA_INTERMEDIA:
+            continue
+
+        arr_hpc = float(target_ponte) - consumo_tratto_pct
+        if arr_hpc < SOGLIA_ARRIVO_HPC_PONTE - 0.1:
+            continue
+
+        # Batteria target equivalente sull'HPC per trovarsi al km dell'HPC con la stessa energia del Piano 1
+        target_hpc_eq = max(
+            int(math.ceil(arr_hpc + 2.0)),
+            int(math.ceil(float(target_pieno) - consumo_tratto_pct)),
+        )
+        if target_hpc_eq > 95:
+            continue
+
+        t_ponte_lenta = calcola_minuti_ricarica(auto_cfg, arr_pct, target_ponte, st_kw)
+        t_ric_hpc = calcola_minuti_ricarica(auto_cfg, arr_hpc, target_hpc_eq, hpc["eff_kw"])
+        t_piano_2 = t_ponte_lenta + MINUTI_FISSI_SOSTA_EXTRA + t_ric_hpc
+        risparmio_min = t_piano_1 - t_piano_2
+
+        if risparmio_min >= RISPARMIO_MINIMO_PONTE_MIN:
+            cand_res = {
+                "hpc": hpc,
+                "target_ponte": int(target_ponte),
+                "min_ponte": int(t_ponte_lenta),
+                "arr_hpc": round(arr_hpc, 1),
+                "target_hpc_eq": int(target_hpc_eq),
+                "min_hpc_eq": int(t_ric_hpc),
+                "t_piano_1": int(t_piano_1),
+                "t_piano_2": int(t_piano_2),
+                "risparmio_min": int(risparmio_min),
+            }
+            if migliore is None or (
+                cand_res["risparmio_min"],
+                int(bool(hpc.get("in_ads"))),
+                float(hpc.get("eff_kw", 0.0)),
+                -dist_hpc,
+            ) > (
+                migliore["risparmio_min"],
+                int(bool(migliore["hpc"].get("in_ads"))),
+                float(migliore["hpc"].get("eff_kw", 0.0)),
+                -(float(migliore["hpc"]["Km"]) - km_s),
+            ):
+                migliore = cand_res
+
+    return migliore
+
+
 def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct, km_fine_tratta=None):
     """
-    Cerca la colonnina di riserva Piano B (Jolly) successiva entro la riserva residua
-    fino al 4% minimo di emergenza, rimanendo rigorosamente entro la tratta corrente
-    (<= km_fine_tratta e stessa direzione/tratta, senza mai sconfinare oltre l'arrivo o nel ritorno).
-    Dà sempre precedenza alle Aree di Servizio in Autostrada (priority == 1 / in_ads)
-    rispetto alle colonnine fuori casello; usa una colonnina fuori casello SOLO se
-    nessuna AdS autostradale è raggiungibile entro la riserva residua.
+    Cerca la colonnina di riserva Piano B (Jolly) successiva entro il chilometro finale della tratta
+    corrente seguendo la cascata di sicurezza a 3 livelli fino all'1% di batteria residua:
+      - Livello 1: Area di Servizio in Autostrada (in_ads / priority == 1) con residua >= 4%;
+      - Livello 2: Emergenza fuori casello (DC/Fast entro 3 km) con residua >= 4%;
+      - Livello 3: Riserva estrema 1% - 3% (precedenza AdS se presenti entrambe).
     """
-    margine_km = max(0.0, (arr_pct - SOGLIA_EMERGENZA_JOLLY) * km_per_pct)
+    margine_km = max(0.0, (arr_pct - SOGLIA_EMERGENZA_ESTREMA_JOLLY) * km_per_pct)
     if margine_km <= 0.5:
         return None
     km_s = float(stazione["Km"])
@@ -1519,18 +1741,57 @@ def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct, km_fine_trat
     if not candidati:
         return None
 
-    # Precedenza assoluta alle colonnine in Autostrada (AdS: priority == 1 / in_ads)
-    candidati_ads = [c for c in candidati if c.get("in_ads") or c.get("priority") == 1]
-    pool_scelta = candidati_ads if candidati_ads else candidati
-    cand = min(pool_scelta, key=lambda c: c["Km"])
+    def _pct_res(c):
+        return arr_pct - (float(c["Km"]) - km_s) / km_per_pct
 
-    pct_em = round(arr_pct - (cand["Km"] - km_s) / km_per_pct, 0)
+    def _e_ads(c):
+        return bool(c.get("in_ads") or c.get("priority") == 1)
+
+    # Livello 1: In Autostrada (AdS) con batteria residua >= 4%
+    liv1 = [c for c in candidati if _e_ads(c) and _pct_res(c) >= SOGLIA_EMERGENZA_JOLLY]
+    if liv1:
+        cand = min(liv1, key=lambda c: float(c["Km"]))
+        livello = 1
+    else:
+        # Livello 2: Emergenza fuori casello (DC/Fast entro 3 km) con batteria residua >= 4%
+        liv2 = [
+            c for c in candidati
+            if (not _e_ads(c))
+            and float(c.get("d_rt", 0.0)) <= 3.0
+            and _pct_res(c) >= SOGLIA_EMERGENZA_JOLLY
+        ]
+        if liv2:
+            cand = min(liv2, key=lambda c: float(c["Km"]))
+            livello = 2
+        else:
+            # Livello 3: Riserva estrema 1% - 3% (precedenza AdS se presenti entrambe)
+            liv3_ads = [c for c in candidati if _e_ads(c) and _pct_res(c) >= SOGLIA_EMERGENZA_ESTREMA_JOLLY]
+            liv3_fuori = [
+                c for c in candidati
+                if (not _e_ads(c))
+                and float(c.get("d_rt", 0.0)) <= 3.0
+                and _pct_res(c) >= SOGLIA_EMERGENZA_ESTREMA_JOLLY
+            ]
+            pool_liv3 = liv3_ads if liv3_ads else liv3_fuori
+            if not pool_liv3:
+                return None
+            cand = min(pool_liv3, key=lambda c: float(c["Km"]))
+            livello = 3
+
+    pct_em_reale = _pct_res(cand)
+    if livello == 3:
+        pct_em_int = max(1, min(3, int(round(pct_em_reale))))
+    else:
+        pct_em_int = max(int(SOGLIA_EMERGENZA_JOLLY), int(round(pct_em_reale)))
+
     return {
         "Stazione": cand["Stazione"],
         "Km": cand["Km"],
-        "delta_km": round(cand["Km"] - km_s, 1),
-        "pct_emergenza": max(int(SOGLIA_EMERGENZA_JOLLY), int(pct_em)),
-        "in_ads": bool(cand.get("in_ads") or cand.get("priority") == 1),
+        "delta_km": round(float(cand["Km"]) - km_s, 1),
+        "pct_emergenza": pct_em_int,
+        "livello": livello,
+        "riserva_estrema": livello == 3,
+        "in_ads": _e_ads(cand),
     }
 
 
@@ -1658,6 +1919,7 @@ def simula_piano_viaggio(
     soste = []
     pct_arrivo_b = None
     max_soste = 10
+    hpc_ponte_forzata = None
 
     def trova_jolly(stazione, arr_pct):
         """Cerca una colonnina successiva (Jolly / Piano B) entro la tratta corrente con precedenza alle AdS."""
@@ -1669,33 +1931,48 @@ def simula_piano_viaggio(
 
     def calcola_target_sosta(stazione, arr_pct):
         """
-        Determina la % target di ripartenza rispettando il tetto massimo rigido dell'80%
-        nelle soste intermedie (charge_to <= 80 anche se comporta una seconda breve sosta).
-        L'unico caso in cui charge_to può superare 80% (fino a 95%) è se più avanti lungo
-        tutto il percorso non esiste alcuna altra colonnina compatibile prima della destinazione,
-        oppure se l'utente ha impostato una "% Arrivo desiderata" > 75%.
+        Determina la % target di ripartenza ottimizzando il tempo totale reale di viaggio:
+        - Entro l'80% se basta a chiudere la tratta.
+        - Oltre l'80% (fino a max 90%) SOLO se evitare una seconda sosta risulta più veloce o pari
+          rispetto a fermarsi all'80% + 7 min fissi di manovra + ricarica della seconda sosta.
+        - Fino al 95% solo se non esistono altre colonnine compatibili avanti o % arrivo > 75%.
         """
         tetto_eccezione = 95
-        km_s = stazione["Km"]
+        km_s = float(stazione["Km"])
         need_end = math.ceil((tot_km - km_s) / km_per_pct + final_req + 1.0)
         need_b = math.ceil((km1 - km_s) / km_per_pct + p_arr_b + 1.0) if (andata_ritorno and km_s < km1) else 0
+        target_unico = max(int(math.ceil(arr_pct + 4)), need_end, need_b)
 
         next_ch = [c for c in pool if km_s + 3.0 < c["Km"] < tot_km - 1.0]
         next_ch_pre_b = [c for c in pool if km_s + 3.0 < c["Km"] < km1 - 1.0] if (andata_ritorno and km_s < km1) else []
         arr_molto_alta = (final_req > 75.0) or (andata_ritorno and km_s < km1 and p_arr_b > 75.0)
 
-        # Caso 1: chiude il viaggio rimanendo entro il tetto rigido dell'80%
-        if need_end <= TETTO_RICARICA_INTERMEDIA and need_b <= TETTO_RICARICA_INTERMEDIA:
-            needed_pct = max(int(math.ceil(arr_pct + 4)), need_end, need_b)
-            return min(TETTO_RICARICA_INTERMEDIA, needed_pct), True
+        # Caso 1: chiude il viaggio rimanendo entro l'80%
+        if target_unico <= TETTO_RICARICA_INTERMEDIA:
+            return min(TETTO_RICARICA_INTERMEDIA, target_unico), True
 
-        # Caso 2 (unica eccezione > 80%, fino a 95%): nessuna altra colonnina compatibile più avanti
-        # prima della destinazione, oppure "% Arrivo desiderata" > 75%
-        if (not next_ch or arr_molto_alta) and need_end <= tetto_eccezione:
-            needed_pct = max(int(math.ceil(arr_pct + 4)), need_end, need_b)
-            return min(tetto_eccezione, needed_pct), True
+        # Caso 2: supera l'80% (fino a max 90%) se lo Scenario 1 (sosta unica) conviene sul tempo totale
+        if TETTO_RICARICA_INTERMEDIA < target_unico <= TETTO_SOSTA_UNICA_OTTIMALE and next_ch:
+            if conviene_sosta_unica_oltre_80(
+                auto_cfg=auto_cfg,
+                stazione=stazione,
+                arr_pct=arr_pct,
+                target_unico=target_unico,
+                next_ch=next_ch,
+                km_per_pct=km_per_pct,
+                km_target_fine=tot_km,
+                req_fine=final_req,
+                km1=km1,
+                andata_ritorno=andata_ritorno,
+                p_arr_b=p_arr_b,
+            ):
+                return int(target_unico), True
 
-        # Caso 3: sosta intermedia -> tetto massimo rigido all'80% (mai superato se esistono altre colonnine)
+        # Caso 3 (eccezione fino al 95%): nessuna altra colonnina compatibile avanti o "% Arrivo desiderata" > 75%
+        if (not next_ch or arr_molto_alta) and target_unico <= tetto_eccezione:
+            return min(tetto_eccezione, target_unico), True
+
+        # Caso 4: sosta intermedia -> resta all'80% (salvo superamento conveniente fino al 90% per chiudere l'andata B)
         if stile_codice == "pranzo":
             base_target = TETTO_RICARICA_INTERMEDIA
         elif stile_codice == "caffe":
@@ -1711,15 +1988,27 @@ def simula_piano_viaggio(
 
         target = min(TETTO_RICARICA_INTERMEDIA, max(base_target, int(math.ceil(arr_pct + 15))))
 
-        # Assicura carica adeguata verso la prossima colonnina restando sempre entro il tetto rigido 80%
+        # Assicura carica adeguata verso la prossima colonnina restando entro l'80%
         if next_ch:
             dist_prossima = next_ch[0]["Km"] - km_s
             min_comodo = math.ceil(dist_prossima / km_per_pct + p_res + 1.0)
             target = min(TETTO_RICARICA_INTERMEDIA, max(target, min_comodo))
 
-        # Unica eccezione sulla tappa intermedia B (A/R): nessuna colonnina compatibile prima di B o % arrivo B > 75%
-        if andata_ritorno and km_s < km1 and (not next_ch_pre_b or p_arr_b > 75.0) and need_b > target:
-            target = min(tetto_eccezione, need_b)
+        # Sulla tratta di andata (A/R), valuta se superare l'80% (max 90%) conviene per evitare una 2ª sosta prima di B
+        if andata_ritorno and km_s < km1 and need_b > target:
+            if not next_ch_pre_b or p_arr_b > 75.0:
+                target = min(tetto_eccezione, need_b)
+            elif need_b <= TETTO_SOSTA_UNICA_OTTIMALE and conviene_sosta_unica_oltre_80(
+                auto_cfg=auto_cfg,
+                stazione=stazione,
+                arr_pct=arr_pct,
+                target_unico=need_b,
+                next_ch=next_ch_pre_b,
+                km_per_pct=km_per_pct,
+                km_target_fine=km1,
+                req_fine=p_arr_b,
+            ):
+                target = int(need_b)
 
         return target, False
 
@@ -1745,6 +2034,33 @@ def simula_piano_viaggio(
         return out
 
     while len(soste) < max_soste:
+        # Se la sosta precedente ha attivato un Rabbocco Ponte su colonnina lenta, pianifica subito l'HPC veloce
+        if hpc_ponte_forzata is not None:
+            st_hpc = hpc_ponte_forzata
+            hpc_ponte_forzata = None
+            tratto_verso_b = bool(andata_ritorno and curr_km < km1)
+            arr_hpc = curr_pct - (float(st_hpc["Km"]) - curr_km) / km_per_pct
+            if float(st_hpc["Km"]) > curr_km + 1.0 and arr_hpc >= 5.0:
+                charge_to_hpc, _ = calcola_target_sosta(st_hpc, arr_hpc)
+                min_ric_hpc = calcola_minuti_ricarica(auto_cfg, arr_hpc, charge_to_hpc, st_hpc["eff_kw"])
+                jolly_hpc = trova_jolly(st_hpc, arr_hpc)
+                soste.append(
+                    {
+                        **st_hpc,
+                        "arr_pct": round(arr_hpc, 1),
+                        "charge_to": int(charge_to_hpc),
+                        "minuti_ricarica": int(min_ric_hpc),
+                        "jolly": jolly_hpc,
+                        "avviso": None,
+                        "nota_extra": "⚡ Completamento rapido su HPC dopo Rabbocco Ponte: massima velocità di ricarica.",
+                    }
+                )
+                curr_km = float(st_hpc["Km"])
+                curr_pct = float(charge_to_hpc)
+                if tratto_verso_b and curr_km >= km1:
+                    pct_arrivo_b = round(curr_pct, 1)
+                continue
+
         if andata_ritorno and curr_km < km1:
             pct_a_b = curr_pct - (km1 - curr_km) / km_per_pct
             pct_a_casa = curr_pct - (tot_km - curr_km) / km_per_pct
@@ -1801,6 +2117,7 @@ def simula_piano_viaggio(
         avviso_card = None
         nota_extra = None
         scelta = None
+        valutazioni_attive = valutazioni
 
         # Regola rabbocco veloce <= 8 min in Autostrada (solo se vicino alla finestra di discesa target):
         soglia_arr_ideale = p_target_col + (22.0 if stile_codice == "pranzo" else 12.0)
@@ -1848,15 +2165,25 @@ def simula_piano_viaggio(
             min_arr_attive = min(v["arr_pct"] for v in valutazioni_attive)
             finestra_ideale = [v for v in valutazioni_attive if v["arr_pct"] <= soglia_arr_ideale]
 
-            # Regola del Jolly (Piano B garantito entro il 4% d'emergenza):
-            # 1) Preferisce stazioni nella finestra ideale con Jolly garantito;
-            # 2) Altrimenti arretra solo alle stazioni più avanzate con Jolly garantito;
-            # 3) Se nessuna ha un Jolly, usa la finestra ideale (o le stazioni più avanzate).
-            finestra_ideale_jolly = [v for v in finestra_ideale if v["jolly"] is not None]
+            # Regola del Jolly (Piano B garantito entro il 4% d'emergenza, Livello 1 o 2):
+            # 1) Preferisce stazioni nella finestra ideale con Jolly sicuro (>= 4%);
+            # 2) Altrimenti arretra solo se non si supera il 65% all'arrivo e senza perdere chiusura in 1 sosta;
+            # 3) Se nessuna soddisfa i criteri, usa la finestra ideale (o le stazioni più avanzate).
+            finestra_ideale_jolly = [
+                v for v in finestra_ideale
+                if v["jolly"] is not None and v["jolly"].get("livello", 3) <= 2
+            ]
             if finestra_ideale_jolly:
                 fascia_utile = finestra_ideale_jolly
             else:
-                tutte_jolly = [v for v in valutazioni_attive if v["jolly"] is not None]
+                finestra_chiude = any(v["chiude"] for v in finestra_ideale)
+                tutte_jolly = [
+                    v for v in valutazioni_attive
+                    if v["jolly"] is not None
+                    and v["jolly"].get("livello", 3) <= 2
+                    and v["arr_pct"] <= 65.0
+                    and (not finestra_chiude or v["chiude"])
+                ]
                 if tutte_jolly:
                     min_arr_jolly = min(v["arr_pct"] for v in tutte_jolly)
                     fascia_utile = [v for v in tutte_jolly if v["arr_pct"] <= min_arr_jolly + 12.0]
@@ -1966,6 +2293,177 @@ def simula_piano_viaggio(
                             v["arr_pct"],
                         ),
                     )
+
+        # Regola generale per il Piano B (Jolly) garantito nella stessa rete autostradale:
+        # se la stazione scelta è in Autostrada ma non ha un Jolly dentro l'Autostrada prima della fine tratta,
+        # valuta la stazione autostradale precedente (prev_ads) purché:
+        #   a) distante almeno 8 km dalla partenza della tratta (e da curr_km) e arrivo <= 65%;
+        #   b) permette di completare la tratta con lo stesso identico numero di soste rispettando la regola
+        #      del minor tempo totale (fino a max 90% se conviene rispetto a una seconda sosta);
+        #   c) la stazione autostradale successiva diventa Piano B (Jolly) garantito senza uscire al casello.
+        ha_jolly_in_ads = bool(scelta.get("jolly") and scelta["jolly"].get("livello") == 1)
+        if scelta["stazione"].get("in_ads") and not ha_jolly_in_ads and valutazioni_attive:
+            km_inizio_tratta = (
+                float(km1)
+                if (andata_ritorno and not tratto_verso_b and float(scelta["stazione"]["Km"]) > float(km1) + 0.05)
+                else 0.0
+            )
+            val_pool_prev = [
+                v for v in valutazioni_attive
+                if v["stazione"].get("in_ads")
+                and float(v["stazione"]["Km"]) < float(scelta["stazione"]["Km"]) - 0.5
+                and (float(v["stazione"]["Km"]) - km_inizio_tratta) >= 8.0
+                and (float(v["stazione"]["Km"]) - curr_km) >= 8.0
+            ]
+            if val_pool_prev:
+                prev_ads = max(val_pool_prev, key=lambda v: float(v["stazione"]["Km"]))
+                prev_jolly = prev_ads.get("jolly")
+
+                if prev_ads["arr_pct"] <= 65.0 and prev_jolly is not None and prev_jolly.get("livello") == 1:
+                    def _stima_soste_residue(start_km, start_pct):
+                        """Stima il numero minimo di soste successive necessarie da (start_km, start_pct)."""
+                        s_km = float(start_km)
+                        s_pct = float(start_pct)
+                        n_extra = 0
+                        for _ in range(max_soste):
+                            if andata_ritorno and s_km < km1:
+                                p_b = s_pct - (km1 - s_km) / km_per_pct
+                                p_end = s_pct - (tot_km - s_km) / km_per_pct
+                                post_b_ok = any(
+                                    km1 < c["Km"] <= km1 + max(0.0, (p_b - p_res) * km_per_pct)
+                                    for c in (pool + ads_rabbocco_pool)
+                                )
+                                if p_b >= p_arr_b and (p_end >= final_req or post_b_ok):
+                                    s_km = km1
+                                    s_pct = p_b
+                                    if p_end >= final_req:
+                                        return n_extra
+                                    continue
+                                lim_sup = km1
+                            else:
+                                p_fin = s_pct - (tot_km - s_km) / km_per_pct
+                                if p_fin >= final_req:
+                                    return n_extra
+                                lim_sup = tot_km - 1.0
+
+                            max_r = s_km + max(0.0, (s_pct - p_target_col) * km_per_pct)
+                            cands = [c for c in pool if s_km + 3.0 < c["Km"] <= min(lim_sup, max_r)]
+                            if not cands and p_target_col > 5.0:
+                                max_r = s_km + max(0.0, (s_pct - 5.0) * km_per_pct)
+                                cands = [c for c in pool if s_km + 3.0 < c["Km"] <= min(lim_sup, max_r)]
+                            if not cands:
+                                return None
+                            nxt = max(cands, key=lambda c: float(c["Km"]))
+                            arr_nxt = s_pct - (float(nxt["Km"]) - s_km) / km_per_pct
+                            chg_nxt, _ = calcola_target_sosta(nxt, arr_nxt)
+                            s_km = float(nxt["Km"])
+                            s_pct = float(chg_nxt)
+                            n_extra += 1
+                        return None
+
+                    rem_ultima = _stima_soste_residue(scelta["stazione"]["Km"], scelta["charge_to"])
+                    if rem_ultima is not None:
+                        km_p = float(prev_ads["stazione"]["Km"])
+                        need_end_p = math.ceil((tot_km - km_p) / km_per_pct + final_req + 1.0)
+                        need_b_p = (
+                            math.ceil((km1 - km_p) / km_per_pct + p_arr_b + 1.0)
+                            if (andata_ritorno and km_p < km1)
+                            else 0
+                        )
+                        next_ch_p = [c for c in pool if km_p + 3.0 < float(c["Km"]) < tot_km - 1.0]
+                        charge_prev_ok = None
+
+                        # Tentativo 1: usa il target già calcolato (che include già la regola tempo totale max 90%)
+                        cand_base = min(TETTO_SOSTA_UNICA_OTTIMALE, int(prev_ads["charge_to"]))
+                        rem_base = _stima_soste_residue(km_p, cand_base)
+                        if rem_base is not None and rem_base <= rem_ultima:
+                            charge_prev_ok = cand_base
+                        else:
+                            # Tentativo 2: verifica se spingersi tra 81% e 90% evita soste extra e conviene sul tempo
+                            for cand_extra in range(TETTO_RICARICA_INTERMEDIA + 1, TETTO_SOSTA_UNICA_OTTIMALE + 1):
+                                rem_extra = _stima_soste_residue(km_p, cand_extra)
+                                if rem_extra is not None and rem_extra <= rem_ultima:
+                                    km_ref_conv = km1 if (andata_ritorno and km_p < km1 and rem_ultima > 0) else tot_km
+                                    req_ref_conv = p_arr_b if (andata_ritorno and km_p < km1 and rem_ultima > 0) else final_req
+                                    ch_ref_conv = (
+                                        [c for c in pool if km_p + 3.0 < float(c["Km"]) < km1 - 1.0]
+                                        if (andata_ritorno and km_p < km1 and rem_ultima > 0)
+                                        else next_ch_p
+                                    )
+                                    if conviene_sosta_unica_oltre_80(
+                                        auto_cfg=auto_cfg,
+                                        stazione=prev_ads["stazione"],
+                                        arr_pct=prev_ads["arr_pct"],
+                                        target_unico=cand_extra,
+                                        next_ch=ch_ref_conv,
+                                        km_per_pct=km_per_pct,
+                                        km_target_fine=km_ref_conv,
+                                        req_fine=req_ref_conv,
+                                        km1=km1,
+                                        andata_ritorno=andata_ritorno,
+                                        p_arr_b=p_arr_b,
+                                    ):
+                                        charge_prev_ok = cand_extra
+                                    break
+
+                        if charge_prev_ok is not None:
+                            min_ric_prev = calcola_minuti_ricarica(
+                                auto_cfg,
+                                prev_ads["arr_pct"],
+                                charge_prev_ok,
+                                prev_ads["stazione"]["eff_kw"],
+                            )
+                            scelta = {
+                                **prev_ads,
+                                "charge_to": int(charge_prev_ok),
+                                "min_ric": int(min_ric_prev),
+                                "costo_tempo": int(min_ric_prev) + prev_ads["stazione"]["detour_min"],
+                                "chiude": rem_ultima == 0,
+                            }
+                            if charge_prev_ok > TETTO_RICARICA_INTERMEDIA:
+                                nota_extra = (
+                                    f"🛡️ Anticipata alla penultima AdS (carica al {charge_prev_ok}% più veloce di una sosta extra): "
+                                    f"garantito Piano B (Jolly) in Autostrada."
+                                )
+                            else:
+                                nota_extra = (
+                                    "🛡️ Anticipata alla penultima AdS: garantito Piano B (Jolly) in Autostrada "
+                                    "senza soste aggiuntive."
+                                )
+
+        # Ottimizzazione "Rabbocco Ponte": se un'auto veloce (picco >= 100 kW) si ferma su una colonnina lenta
+        # (<= 65 kW), valuta se limitare la carica al solo rabbocco minimo per raggiungere una HPC (>= 150 kW)
+        # lungo la stessa tratta risparmiando almeno 5 minuti netti (inclusi i 7 minuti fissi della sosta extra).
+        km_fine_tratta_ponte = (
+            float(km1)
+            if (andata_ritorno and float(scelta["stazione"]["Km"]) < float(km1))
+            else float(tot_km)
+        )
+        ponte_hpc = valuta_rabbocco_ponte_hpc(
+            auto_cfg=auto_cfg,
+            stazione=scelta["stazione"],
+            arr_pct=scelta["arr_pct"],
+            target_pieno=scelta["charge_to"],
+            pool_avanti=pool + ads_rabbocco_pool,
+            km_per_pct=km_per_pct,
+            km_fine_tratta=km_fine_tratta_ponte,
+        )
+        if ponte_hpc is not None:
+            scelta = {
+                **scelta,
+                "charge_to": int(ponte_hpc["target_ponte"]),
+                "min_ric": int(ponte_hpc["min_ponte"]),
+                "costo_tempo": int(ponte_hpc["min_ponte"]) + scelta["stazione"]["detour_min"],
+                "chiude": False,
+            }
+            hpc_ponte_forzata = ponte_hpc["hpc"]
+            nota_ponte = (
+                f"⚡ Rabbocco Ponte ({int(round(scelta['stazione']['eff_kw']))} kW → "
+                f"{int(round(ponte_hpc['hpc']['eff_kw']))} kW): carichi solo fino al "
+                f"{ponte_hpc['target_ponte']}% per raggiungere {ponte_hpc['hpc']['Stazione']} "
+                f"risparmiando ~{ponte_hpc['risparmio_min']} min netti."
+            )
+            nota_extra = f"{nota_ponte} {nota_extra}".strip() if nota_extra else nota_ponte
 
         st_scelta = scelta["stazione"]
         soste.append(
@@ -2404,19 +2902,35 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         else:
             max_reach = min(max_km_5, tot_km - 1.0)
 
+        e_sosta_ritorno = andata_ritorno and ("Ritorno" in str(def_s.get("Tratta", "")) or def_s["Km"] > km1 + 0.05)
+        e_sosta1_batteria_bassa = (i == 0) and (not e_sosta_ritorno) and (p_start <= 25.0)
+
         # Includi eventuali AdS per rabbocco veloce se l'opzione è attiva con Solo Tesla o operatore preferito
         pool_corrente = list(pool_compatibile)
+        chiavi_esistenti = {(c["Km"], c["Stazione"]) for c in pool_corrente}
         if (pool_rete in ("tesla", "operatore") or bool(op_kw_sol)) and consenti_rabbocco:
-            chiavi_esistenti = {(c["Km"], c["Stazione"]) for c in pool_corrente}
             for c in all_ch:
                 if c["in_ads"] and (c["Km"], c["Stazione"]) not in chiavi_esistenti:
                     pool_corrente.append(c)
+                    chiavi_esistenti.add((c["Km"], c["Stazione"]))
+
+        # Se si parte con batteria bassa (<= 25%), nel menu Sosta 1 includi anche le colonnine veloci
+        # tra Km 1.0 e Km 10.0 vicine alla partenza (prima di entrare in autostrada)
+        if e_sosta1_batteria_bassa:
+            for c in all_ch:
+                if (1.0 <= c["Km"] <= 10.0) and (c["Km"], c["Stazione"]) not in chiavi_esistenti:
+                    pool_corrente.append(c)
+                    chiavi_esistenti.add((c["Km"], c["Stazione"]))
 
         # Mostra tutte le colonnine compatibili raggiungibili (5% <= batteria <= 75%),
         # ordinate per vicinanza crescente alla stazione principale con delta km esplicito
         # (con contachilometri azzerato da destinazione per le soste del ritorno)
-        e_sosta_ritorno = andata_ritorno and ("Ritorno" in str(def_s.get("Tratta", "")) or def_s["Km"] > km1 + 0.05)
-        km_inf_filtro = max(curr_km + 10.0, km1 + 3.0) if e_sosta_ritorno else (curr_km + 10.0)
+        if e_sosta_ritorno:
+            km_inf_filtro = max(curr_km + 10.0, km1 + 3.0)
+        elif e_sosta1_batteria_bassa:
+            km_inf_filtro = curr_km + 1.0
+        else:
+            km_inf_filtro = curr_km + 10.0
         dest_breve = res["dest"]
 
         def _fmt_km_opz(km_val):
@@ -2435,7 +2949,11 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         alternative = [
             c for c in pool_corrente
             if (km_inf_filtro <= c["Km"] <= max(max_reach, def_s["Km"]))
-            and (5.0 <= (curr_pct - (c["Km"] - curr_km) / km_per_pct) <= 75.0)
+            and (
+                (2.0 if (e_sosta1_batteria_bassa and c["Km"] <= 10.0) else 5.0)
+                <= (curr_pct - (c["Km"] - curr_km) / km_per_pct)
+                <= 75.0
+            )
             and f"{c['Km']:.1f}|{c['Stazione']}" != def_key
         ]
         alternative.sort(key=lambda x: (abs(x["Km"] - def_s["Km"]), x["Km"]))
@@ -2475,6 +2993,7 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         )
 
         # Ricalcola carica necessaria, minuti e avvisi rispettando il tetto rigido dell'80%
+        sosta_hpc_extra = None
         if (not cambiata_dall_utente) and abs(arr_pct - def_s["arr_pct"]) < 0.6:
             charge_to = int(def_s["charge_to"])
             min_ric = int(def_s["minuti_ricarica"])
@@ -2498,11 +3017,28 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
                         else 0
                     )
                     needed_pct = max(int(math.ceil(arr_pct + 4)), need_end, need_b)
-                    # Supera l'80% (fino a 95%) solo se non esistono altre colonnine compatibili avanti o % arrivo > 75%
+                    # Supera l'80% (fino a 90%) se conviene sul tempo totale rispetto a una 2ª sosta;
+                    # fino a 95% solo se non esistono altre colonnine avanti o % arrivo > 75%
                     if not next_ch_dyn or arr_molto_alta_dyn:
                         charge_to = min(tetto_eccezione, needed_pct)
+                    elif needed_pct <= TETTO_RICARICA_INTERMEDIA:
+                        charge_to = int(needed_pct)
+                    elif needed_pct <= TETTO_SOSTA_UNICA_OTTIMALE and conviene_sosta_unica_oltre_80(
+                        auto_cfg=auto_cfg,
+                        stazione=st_scelta,
+                        arr_pct=arr_pct,
+                        target_unico=needed_pct,
+                        next_ch=next_ch_dyn,
+                        km_per_pct=km_per_pct,
+                        km_target_fine=tot_km,
+                        req_fine=final_req,
+                        km1=km1,
+                        andata_ritorno=andata_ritorno,
+                        p_arr_b=p_arr_b,
+                    ):
+                        charge_to = int(needed_pct)
                     else:
-                        charge_to = min(TETTO_RICARICA_INTERMEDIA, needed_pct)
+                        charge_to = TETTO_RICARICA_INTERMEDIA
             else:
                 next_km_ref = soste_default[i + 1]["Km"]
                 p_col_ref = float(res.get("p_colonnina", 15))
@@ -2526,8 +3062,119 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
 
             min_ric = calcola_minuti_ricarica(auto_cfg, arr_pct, charge_to, st_scelta["eff_kw"])
             avviso_dyn = None
+            nota_dyn = (
+                "🔄 Stazione cambiata manualmente: ricarica, tempi e batteria all'arrivo aggiornati."
+                if cambiata_dall_utente
+                else def_s.get("nota_extra")
+            )
+
+            # Ottimizzazione "Rabbocco Ponte" anche in caso di selezione manuale di una colonnina lenta (<= 65 kW)
+            if (not sol_base.get("sosta_opzionale")) and float(st_scelta.get("eff_kw", 0.0)) <= SOGLIA_COLONNINA_LENTA_KW:
+                ha_next_stessa_tratta = False
+                if i < n_soste - 1:
+                    next_def = soste_default[i + 1]
+                    next_e_rit = andata_ritorno and (
+                        "Ritorno" in str(next_def.get("Tratta", "")) or float(next_def["Km"]) > km1 + 0.05
+                    )
+                    ha_next_stessa_tratta = next_e_rit == e_sosta_ritorno
+
+                pool_ponte_dyn = [soste_default[i + 1]] if ha_next_stessa_tratta else pool_corrente
+                ponte_dyn = valuta_rabbocco_ponte_hpc(
+                    auto_cfg=auto_cfg,
+                    stazione=st_scelta,
+                    arr_pct=arr_pct,
+                    target_pieno=charge_to,
+                    pool_avanti=pool_ponte_dyn,
+                    km_per_pct=km_per_pct,
+                    km_fine_tratta=km_limite_jolly,
+                )
+                if ponte_dyn is not None:
+                    charge_to = int(ponte_dyn["target_ponte"])
+                    min_ric = int(ponte_dyn["min_ponte"])
+                    nota_dyn = (
+                        f"⚡ Rabbocco Ponte ({int(round(st_scelta['eff_kw']))} kW → "
+                        f"{int(round(ponte_dyn['hpc']['eff_kw']))} kW): carichi solo fino al "
+                        f"{charge_to}% per raggiungere {ponte_dyn['hpc']['Stazione']} "
+                        f"risparmiando ~{ponte_dyn['risparmio_min']} min netti."
+                    )
+                    if not ha_next_stessa_tratta:
+                        hpc_st = ponte_dyn["hpc"]
+                        arr_hpc_dyn = float(charge_to) - (float(hpc_st["Km"]) - float(st_scelta["Km"])) / km_per_pct
+                        next_ch_hpc = [c for c in pool_corrente if float(hpc_st["Km"]) + 3.0 < float(c["Km"]) < tot_km - 1.0]
+                        if i == n_soste - 1:
+                            need_end_h = math.ceil((tot_km - float(hpc_st["Km"])) / km_per_pct + final_req + 1.0)
+                            need_b_h = (
+                                math.ceil((km1 - float(hpc_st["Km"])) / km_per_pct + p_arr_b + 1.0)
+                                if (andata_ritorno and float(hpc_st["Km"]) < km1)
+                                else 0
+                            )
+                            needed_hpc = max(int(math.ceil(arr_hpc_dyn + 4)), need_end_h, need_b_h)
+                            if not next_ch_hpc or arr_molto_alta_dyn:
+                                charge_to_hpc = min(tetto_eccezione, needed_hpc)
+                            elif needed_hpc <= TETTO_RICARICA_INTERMEDIA:
+                                charge_to_hpc = int(needed_hpc)
+                            elif needed_hpc <= TETTO_SOSTA_UNICA_OTTIMALE and conviene_sosta_unica_oltre_80(
+                                auto_cfg=auto_cfg,
+                                stazione=hpc_st,
+                                arr_pct=arr_hpc_dyn,
+                                target_unico=needed_hpc,
+                                next_ch=next_ch_hpc,
+                                km_per_pct=km_per_pct,
+                                km_target_fine=tot_km,
+                                req_fine=final_req,
+                                km1=km1,
+                                andata_ritorno=andata_ritorno,
+                                p_arr_b=p_arr_b,
+                            ):
+                                charge_to_hpc = int(needed_hpc)
+                            else:
+                                charge_to_hpc = TETTO_RICARICA_INTERMEDIA
+                        else:
+                            next_km_h = float(soste_default[i + 1]["Km"])
+                            p_col_h = float(res.get("p_colonnina", 15))
+                            need_next_h = math.ceil((next_km_h - float(hpc_st["Km"])) / km_per_pct + p_col_h + 1.0)
+                            need_b_h = (
+                                math.ceil((km1 - float(hpc_st["Km"])) / km_per_pct + p_arr_b + 1.0)
+                                if (andata_ritorno and float(hpc_st["Km"]) < km1 <= next_km_h)
+                                else 0
+                            )
+                            needed_hpc = max(int(math.ceil(arr_hpc_dyn + 15)), need_next_h, need_b_h)
+                            charge_to_hpc = min(TETTO_SOSTA_UNICA_OTTIMALE if needed_hpc <= TETTO_SOSTA_UNICA_OTTIMALE else tetto_eccezione, max(TETTO_RICARICA_INTERMEDIA if needed_hpc > TETTO_RICARICA_INTERMEDIA else needed_hpc, needed_hpc))
+                            if needed_hpc > TETTO_RICARICA_INTERMEDIA and not arr_molto_alta_dyn:
+                                charge_to_hpc = min(TETTO_RICARICA_INTERMEDIA, needed_hpc)
+                                if needed_hpc <= TETTO_SOSTA_UNICA_OTTIMALE and conviene_sosta_unica_oltre_80(
+                                    auto_cfg=auto_cfg,
+                                    stazione=hpc_st,
+                                    arr_pct=arr_hpc_dyn,
+                                    target_unico=needed_hpc,
+                                    next_ch=next_ch_hpc,
+                                    km_per_pct=km_per_pct,
+                                    km_target_fine=km1 if (andata_ritorno and float(hpc_st["Km"]) < km1) else tot_km,
+                                    req_fine=p_arr_b if (andata_ritorno and float(hpc_st["Km"]) < km1) else final_req,
+                                ):
+                                    charge_to_hpc = int(needed_hpc)
+
+                        min_ric_hpc = calcola_minuti_ricarica(auto_cfg, arr_hpc_dyn, charge_to_hpc, hpc_st["eff_kw"])
+                        jolly_hpc_dyn = trova_jolly_stazione(
+                            hpc_st,
+                            arr_hpc_dyn,
+                            all_ch,
+                            km_per_pct,
+                            km_fine_tratta=km_limite_jolly,
+                        )
+                        sosta_hpc_extra = {
+                            **hpc_st,
+                            "arr_pct": round(arr_hpc_dyn, 1),
+                            "charge_to": int(charge_to_hpc),
+                            "minuti_ricarica": int(min_ric_hpc),
+                            "jolly": jolly_hpc_dyn,
+                            "avviso": None,
+                            "nota_extra": "⚡ Completamento rapido su HPC dopo Rabbocco Ponte: massima velocità di ricarica.",
+                        }
+
             if (
-                i == n_soste - 1
+                sosta_hpc_extra is None
+                and i == n_soste - 1
                 and not sol_base.get("sosta_opzionale")
                 and (charge_to - (tot_km - st_scelta["Km"]) / km_per_pct) < final_req - 0.5
             ):
@@ -2542,14 +3189,8 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
                         "⚠️ Stazione troppo anticipata: anche caricando al massimo la batteria finale scende "
                         "sotto la soglia minima richiesta. Scegli una stazione più avanti lungo il percorso."
                     )
-            elif stile_codice in ("caffe", "pranzo") and st_scelta.get("has_food", 0) == 0 and st_scelta.get("has_mall", 0) == 0:
+            elif sosta_hpc_extra is None and stile_codice in ("caffe", "pranzo") and st_scelta.get("has_food", 0) == 0 and st_scelta.get("has_mall", 0) == 0:
                 avviso_dyn = "⚠️ Nessun ristorante o centro commerciale mappato entro 200 m da questa stazione."
-
-            nota_dyn = (
-                "🔄 Stazione cambiata manualmente: ricarica, tempi e batteria all'arrivo aggiornati."
-                if cambiata_dall_utente
-                else def_s.get("nota_extra")
-            )
 
         sosta_agg = {
             **st_scelta,
@@ -2563,8 +3204,14 @@ def risolvi_soluzione_interattiva(sol_base, res, codice_sol):
         soste_attive.append(sosta_agg)
         controlli.append((sel_key, opzioni_id, mappa_etichette))
 
-        curr_km = st_scelta["Km"]
-        curr_pct = float(charge_to)
+        if sosta_hpc_extra is not None:
+            soste_attive.append(sosta_hpc_extra)
+            controlli.append(None)
+            curr_km = float(sosta_hpc_extra["Km"])
+            curr_pct = float(sosta_hpc_extra["charge_to"])
+        else:
+            curr_km = st_scelta["Km"]
+            curr_pct = float(charge_to)
 
     # Calcolo esatto della batteria stimata all'arrivo (B) e al rientro a casa (A)
     if andata_ritorno:
@@ -2605,9 +3252,13 @@ def render_step_header(numero, titolo):
 
 
 def costruisci_righe_locali(lat, lon, food_name, mall_name):
-    """Genera le righe chiave-valore con i nomi reali cliccabili di ristorante e centro commerciale."""
+    """Genera le righe chiave-valore cliccabili di ristorante e centro commerciale, evitando duplicati identici."""
     righe = []
-    if food_name:
+    food_pulito = (food_name or "").strip()
+    mall_pulito = (mall_name or "").strip()
+    nomi_coincidenti = bool(food_pulito and mall_pulito and food_pulito.lower() == mall_pulito.lower())
+
+    if food_pulito:
         url_food = html.escape(
             f"https://www.google.com/maps/search/?api=1&query=ristorante+{lat},{lon}",
             quote=True,
@@ -2616,10 +3267,10 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
             f'<div class="ev-kv">'
             f'<span class="ev-k">🍽️ Vicino a</span>'
             f'<span class="ev-v"><a href="{url_food}" target="_blank" rel="noopener noreferrer" '
-            f'style="color:#60A5FA; text-decoration:none;">{html.escape(food_name)} ↗</a></span>'
+            f'style="color:#60A5FA; text-decoration:none;">{html.escape(food_pulito)} ↗</a></span>'
             f'</div>'
         )
-    if mall_name:
+    if mall_pulito and not nomi_coincidenti:
         url_mall = html.escape(
             f"https://www.google.com/maps/search/?api=1&query=supermercato+centro+commerciale+{lat},{lon}",
             quote=True,
@@ -2628,7 +3279,7 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
             f'<div class="ev-kv">'
             f'<span class="ev-k">🛒 Vicino a</span>'
             f'<span class="ev-v"><a href="{url_mall}" target="_blank" rel="noopener noreferrer" '
-            f'style="color:#C084FC; text-decoration:none;">{html.escape(mall_name)} ↗</a></span>'
+            f'style="color:#C084FC; text-decoration:none;">{html.escape(mall_pulito)} ↗</a></span>'
             f'</div>'
         )
     return "".join(righe)
@@ -2736,7 +3387,65 @@ def render_banner_verdetto(sol_a, res):
         )
 
 
-def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, colore_bordo="#10B981"):
+def render_consiglio_batteria_bassa(sol_a, res):
+    """
+    Mostra un riquadro informativo non invasivo 'Consiglio di buon senso' quando l'utente
+    parte con batteria <= 20% oppure arriva alla prima sosta pianificata sotto il 10%.
+    """
+    pct_partenza = int(round(float(res.get("p_start", 100))))
+    soste_a = sol_a.get("soste", []) if (sol_a and sol_a.get("valido")) else []
+    prima_arr = float(soste_a[0]["arr_pct"]) if soste_a else None
+
+    mostra_consiglio = (pct_partenza <= 20) or (prima_arr is not None and prima_arr < 10.0)
+    if not mostra_consiglio:
+        return
+
+    orig_raw = str(res.get("orig", "")).strip()
+    orig_esc = html.escape(orig_raw)
+    url_col_partenza = html.escape(
+        f"https://www.google.com/maps/search/?api=1&query=colonnine+ricarica+rapida+vicino+{quote(orig_raw)}",
+        quote=True,
+    )
+
+    if prima_arr is not None:
+        pct_prima_txt = int(round(prima_arr))
+        testo_consiglio = (
+            f"💡 <strong>Consiglio di buon senso:</strong> stai partendo con batteria bassa "
+            f"(<strong>{pct_partenza}%</strong>). Anche se il percorso arriva alla prima colonnina "
+            f"(al <strong>{pct_prima_txt}%</strong>), ti consigliamo di fare un rabbocco veloce "
+            f"prima di entrare in autostrada per viaggiare senza rischi."
+        )
+    elif sol_a and sol_a.get("valido"):
+        pct_dest_txt = int(round(float(sol_a.get("pct_arrivo_b", 0.0))))
+        testo_consiglio = (
+            f"💡 <strong>Consiglio di buon senso:</strong> stai partendo con batteria bassa "
+            f"(<strong>{pct_partenza}%</strong>). Anche se il percorso arriva diretto a destinazione "
+            f"(al <strong>{pct_dest_txt}%</strong>), ti consigliamo di fare un rabbocco veloce "
+            f"prima di entrare in autostrada per viaggiare senza rischi."
+        )
+    else:
+        testo_consiglio = (
+            f"💡 <strong>Consiglio di buon senso:</strong> stai partendo con batteria bassa "
+            f"(<strong>{pct_partenza}%</strong>). Ti consigliamo di fare un rabbocco veloce "
+            f"prima di entrare in autostrada per viaggiare senza rischi."
+        )
+
+    st.markdown(
+        f'<div class="ev-card" style="background:rgba(59,130,246,0.10); '
+        f'border:1px solid rgba(59,130,246,0.38); border-left:4px solid #3B82F6; padding:12px 15px;">'
+        f'<div style="font-size:0.89rem; color:#E2E8F0; line-height:1.45;">{testo_consiglio}</div>'
+        f'<div style="margin-top:8px;">'
+        f'<a href="{url_col_partenza}" target="_blank" rel="noopener noreferrer" '
+        f'style="color:#60A5FA; font-weight:700; font-size:0.88rem; text-decoration:none;">'
+        f'📍 Trova colonnina veloce vicino a {orig_esc} prima del casello ↗'
+        f'</a>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, tot_km_sol=None, colore_bordo="#10B981"):
     """Renderizza una singola fermata di ricarica come Dark Card finanziaria mobile-first."""
     nome = html.escape(sosta["Stazione"])
     tratta = html.escape(sosta["Tratta"])
@@ -2783,22 +3492,44 @@ def render_card_sosta(indice, sosta, res=None, km1_offset=0.0, colore_bordo="#10
         j_nome = html.escape(jolly["Stazione"])
         j_km_disp = max(0.0, float(jolly["Km"]) - km1_offset) if e_ritorno else float(jolly["Km"])
         j_km_txt = f"Km {j_km_disp:.1f} da {dest_nome}" if e_ritorno else f"Km {j_km_disp:.1f}"
-        if jolly.get("in_ads"):
-            j_dettaglio = f'{j_nome} • 🛣️ AdS • {j_km_txt} (+{jolly["delta_km"]:.1f} km, emerg. ~{jolly["pct_emergenza"]}%)'
+        livello_j = int(jolly.get("livello") or (3 if jolly.get("riserva_estrema") else (1 if jolly.get("in_ads") else 2)))
+
+        if livello_j == 1:
+            # Livello 1: In Autostrada (AdS) con batteria residua >= 4%
+            j_dettaglio = f'{j_nome} • 🛣️ AdS • {j_km_txt} (+{jolly["delta_km"]:.1f} km, residua ~{jolly["pct_emergenza"]}%)'
+            j_colore = "#93C5FD"
+        elif livello_j == 2:
+            # Livello 2: Emergenza fuori casello con batteria residua >= 4%
+            j_dettaglio = (
+                f'🚨 Emergenza fuori casello: {j_nome} • +{jolly["delta_km"]:.1f} km '
+                f'(residua ~{jolly["pct_emergenza"]}% — valuta uscita al casello o riduci velocità)'
+            )
+            j_colore = "#FBBF24"
         else:
-            j_dettaglio = f'{j_nome} • Fuori casello d\'emergenza • +{jolly["delta_km"]:.1f} km ({j_km_txt}, emerg. ~{jolly["pct_emergenza"]}%)'
+            # Livello 3: Riserva estrema 1% - 3% (rischio esplicito)
+            j_dettaglio = (
+                f'⚠️ Riserva estrema: {j_nome} • +{jolly["delta_km"]:.1f} km '
+                f'(~{jolly["pct_emergenza"]}% — rischio stop/carroattrezzi: riduci velocità a 90 km/h o valuta uscita al casello)'
+            )
+            j_colore = "#FCA5A5"
+
         riga_jolly = (
             f'<div class="ev-kv">'
             f'<span class="ev-k">🛟 Piano B (Jolly)</span>'
-            f'<span class="ev-v" style="color:#93C5FD;">{j_dettaglio}</span>'
+            f'<span class="ev-v" style="color:{j_colore};">{j_dettaglio}</span>'
             f'</div>'
         )
     else:
+        pct_arr_int = int(round(float(sosta["arr_pct"])))
+        msg_no_jolly = (
+            f"⚠️ Nessuna colonnina raggiungibile con la batteria residua ({pct_arr_int}%): "
+            f"riduci subito velocità a 80-90 km/h o esci al primo casello"
+        )
         riga_jolly = (
-            '<div class="ev-kv">'
-            '<span class="ev-k">🛟 Piano B (Jolly)</span>'
-            '<span class="ev-v" style="color:#94A3B8;">Nessuna AdS prima dell\'arrivo (usa ricarica a destinazione)</span>'
-            '</div>'
+            f'<div class="ev-kv">'
+            f'<span class="ev-k">🛟 Piano B (Jolly)</span>'
+            f'<span class="ev-v" style="color:#FCA5A5;">{msg_no_jolly}</span>'
+            f'</div>'
         )
 
     extra_html = ""
@@ -2947,20 +3678,27 @@ def render_card_rientro_finale(sol, res, colore_bordo="#10B981"):
     st.markdown(card_html, unsafe_allow_html=True)
 
 
-def render_card_colonnina_generica(item, mostra_km=False):
+def render_card_colonnina_generica(item, mostra_km=False, km1_offset=0.0, dest_nome=""):
     """Renderizza una colonnina (Cerca in Zona o Modalità Esperto) in formato Dark Card compatto."""
     nome = html.escape(item["Stazione"])
     potenza = html.escape(item["Potenza"])
     maps_url = html.escape(item["Maps"], quote=True)
-    is_fast = bool(item.get("is_dc") or item.get("kw", 0) >= 50)
-    colore_bordo = "#10B981" if item.get("kw", 0) >= 150 else ("#3B82F6" if is_fast else "#64748B")
+    fascia = classifica_fascia_potenza(item)
+    is_hyper = fascia == "hyper"
+    is_hpc = fascia == "hpc"
+    is_fast = fascia in ("hyper", "hpc", "fast")
+    colore_bordo = "#F59E0B" if is_hyper else ("#10B981" if is_hpc else ("#3B82F6" if is_fast else "#64748B"))
 
     food_name = item.get("food_name") or (FALLBACK_FOOD_NAME if item.get("has_food") else "")
     mall_name = item.get("mall_name") or (FALLBACK_MALL_NAME if item.get("has_mall") else "")
 
     badges = []
-    if is_fast:
+    if is_hyper:
+        badges.append(f'<span class="ev-badge ev-b-amber">{potenza}</span>')
+    elif is_hpc:
         badges.append(f'<span class="ev-badge ev-b-green">{potenza}</span>')
+    elif is_fast:
+        badges.append(f'<span class="ev-badge ev-b-blue">{potenza}</span>')
     else:
         badges.append(f'<span class="ev-badge ev-b-slate">{potenza}</span>')
     badges.extend(
@@ -2974,16 +3712,24 @@ def render_card_colonnina_generica(item, mostra_km=False):
 
     righe = []
     if mostra_km:
+        tratta_str = str(item.get("Tratta", ""))
+        e_ritorno = ("Ritorno" in tratta_str) and float(km1_offset or 0.0) > 0.0
+        km_val = max(0.0, float(item["Km"]) - float(km1_offset)) if e_ritorno else float(item["Km"])
+        pos_km_txt = f"Km {km_val:.1f} da {html.escape(dest_nome)}" if (e_ritorno and dest_nome) else f"Km {km_val:.1f}"
         righe.append(
             f'<div class="ev-kv"><span class="ev-k">Posizione</span>'
-            f'<span class="ev-v">{html.escape(item["Tratta"])} • Km {item["Km"]:.1f}</span></div>'
+            f'<span class="ev-v">{html.escape(tratta_str)} • {pos_km_txt}</span></div>'
         )
         righe.append(
             f'<div class="ev-kv"><span class="ev-k">Accesso</span>'
             f'<span class="ev-v">{html.escape(item["Note"])}</span></div>'
         )
     else:
-        tipo_txt = "⚡ Fast / HPC DC" if is_fast else "🔌 Quick AC"
+        tipo_txt = (
+            "⚡ Hyper-Fast (>= 400 kW)"
+            if is_hyper
+            else ("🚀 Ultra-Fast / HPC" if is_hpc else ("🔌 Fast DC" if is_fast else "🐢 Lenta / AC"))
+        )
         righe.append(
             f'<div class="ev-kv"><span class="ev-k">Distanza dal punto cercato</span>'
             f'<span class="ev-v">{item["Distanza"]:.1f} km</span></div>'
@@ -3150,7 +3896,7 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
     ora_rip_rit = html.escape(str(sol.get("ora_partenza_ritorno") or "--:--"))
 
     def _render_sosta_con_selettore(idx_global, sosta_item):
-        if idx_global - 1 < len(controlli):
+        if idx_global - 1 < len(controlli) and controlli[idx_global - 1] is not None:
             sel_key, opzioni_id, mappa_etichette = controlli[idx_global - 1]
             st.selectbox(
                 f"🔄 Cambia stazione Sosta {idx_global} (alternative prima/dopo lungo il percorso)",
@@ -3158,7 +3904,14 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
                 format_func=lambda sid, m=mappa_etichette: m[sid],
                 key=sel_key,
             )
-        render_card_sosta(idx_global, sosta_item, res=res, km1_offset=km1_sol, colore_bordo=colore_bordo)
+        render_card_sosta(
+            idx_global,
+            sosta_item,
+            res=res,
+            km1_offset=km1_sol,
+            tot_km_sol=km_sol,
+            colore_bordo=colore_bordo,
+        )
 
     if res["andata_ritorno"]:
         # --- SEZIONE 1: VIAGGIO DI ANDATA ---
@@ -3531,12 +4284,18 @@ with tab_viaggio:
             auto_cfg = costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc)
 
             # Tariffe energia modificabili (casa e colonnine veloci) per il riepilogo economico completo
+            # Tariffa casa predefinita calibrata sulla bolletta reale Alperia (0.21 €/kWh) per Fabio, Elizabeth, Alessia
+            costo_casa_default = (
+                0.21
+                if str(current_user or "").strip().lower() in ("fabio", "elizabeth", "alessia")
+                else 0.25
+            )
             c_t1, c_t2 = st.columns(2)
             costo_casa_kwh = c_t1.number_input(
                 "🏠 Costo energia casa (€/kWh)",
                 min_value=0.05,
                 max_value=1.50,
-                value=0.25,
+                value=costo_casa_default,
                 step=0.01,
                 format="%.2f",
                 key="num_costo_casa",
@@ -3812,7 +4571,7 @@ with tab_viaggio:
                     else:
                         p1 = (g1[0], g1[1])
                         p2 = (g2[0], g2[1])
-                        raggio_corrente = float(st.session_state.get("sld_zona_raggio", 5))
+                        raggio_corrente = float(st.session_state.get("sld_zona_raggio", 10))
                         dest_ch = cerca_colonnine_zona(db, g2[0], g2[1], raggio_km=raggio_corrente)
                         colonnina_vicina_dest = dest_ch[0] if dest_ch else trova_colonnina_piu_vicina(db, g2[0], g2[1])
 
@@ -4028,6 +4787,7 @@ with tab_viaggio:
 
         # Verdetto immediato ben evidente in cima ai risultati prima delle card Soluzione A / B
         render_banner_verdetto(sol_a_dyn, res)
+        render_consiglio_batteria_bassa(sol_a_dyn, res)
 
         # KPI sintetici in griglia mobile-first con consumo totale (kWh) + consumo medio (kWh/100km)
         st.markdown(
@@ -4067,8 +4827,9 @@ with tab_viaggio:
             tempo_b_txt = formatta_durata(sol_b_dyn["tempo_totale_min"]) if sol_b_dyn.get("valido") else "N.D."
             titolo_b = f"🔵 SOLUZIONE B ({res['desc_b']}) — Totale: {tempo_b_txt}"
             b_modificata = any(
-                st.session_state.get(sel_key) not in (None, opzioni_id[0])
-                for sel_key, opzioni_id, _ in ctrl_b
+                st.session_state.get(item[0]) not in (None, item[1][0])
+                for item in ctrl_b
+                if item is not None
             )
             espandi_b = b_modificata or (res.get("strada_codice") == "confronta")
             with st.expander(titolo_b, expanded=espandi_b):
@@ -4092,9 +4853,56 @@ with tab_viaggio:
         )
         if mostra_tutte:
             if res["all_ch"]:
+                km1_esp = float(res.get("km1", 0.0)) if res.get("andata_ritorno") else 0.0
+                dest_esp = res.get("dest", "")
                 st.caption(f"Totale colonnine Fast/HPC rilevate lungo il percorso: {len(res['all_ch'])}")
-                for ch in res["all_ch"]:
-                    render_card_colonnina_generica(ch, mostra_km=True)
+
+                def _chiave_ord_esperto(ch):
+                    e_rit = 1 if "Ritorno" in str(ch.get("Tratta", "")) else 0
+                    return (e_rit, float(ch.get("Km", 0.0)))
+
+                hyper_list = sorted(
+                    [ch for ch in res["all_ch"] if classifica_fascia_potenza(ch) == "hyper"],
+                    key=_chiave_ord_esperto,
+                )
+                hpc_list = sorted(
+                    [ch for ch in res["all_ch"] if classifica_fascia_potenza(ch) == "hpc"],
+                    key=_chiave_ord_esperto,
+                )
+                fast_list = sorted(
+                    [ch for ch in res["all_ch"] if classifica_fascia_potenza(ch) not in ("hyper", "hpc")],
+                    key=_chiave_ord_esperto,
+                )
+
+                if hyper_list:
+                    with st.expander(f"⚡ Hyper-Fast (>= 400 kW) — {len(hyper_list)} stazioni", expanded=True):
+                        for ch in hyper_list:
+                            render_card_colonnina_generica(
+                                ch,
+                                mostra_km=True,
+                                km1_offset=km1_esp,
+                                dest_nome=dest_esp,
+                            )
+
+                if hpc_list:
+                    with st.expander(f"🚀 Ultra-Fast / HPC (150 – 399 kW) — {len(hpc_list)} stazioni", expanded=True):
+                        for ch in hpc_list:
+                            render_card_colonnina_generica(
+                                ch,
+                                mostra_km=True,
+                                km1_offset=km1_esp,
+                                dest_nome=dest_esp,
+                            )
+
+                if fast_list:
+                    with st.expander(f"🔌 Fast DC Standard (50 – 149 kW) — {len(fast_list)} stazioni", expanded=False):
+                        for ch in fast_list:
+                            render_card_colonnina_generica(
+                                ch,
+                                mostra_km=True,
+                                km1_offset=km1_esp,
+                                dest_nome=dest_esp,
+                            )
             else:
                 st.info("Nessuna colonnina Fast/HPC rilevata lungo il percorso.")
 
@@ -4119,8 +4927,8 @@ with tab_zona:
     raggio_zona = st.slider(
         "Raggio di ricerca (km)",
         min_value=2,
-        max_value=10,
-        value=5,
+        max_value=20,
+        value=10,
         step=1,
         key="sld_zona_raggio",
     )
@@ -4197,19 +5005,78 @@ with tab_zona:
         filtrate_z = [
             d
             for d in zres["stazioni"]
-            if (not solo_fast_z or d["is_dc"] == 1 or d["kw"] >= 50)
+            if (not solo_fast_z or classifica_fascia_potenza(d) in ("hyper", "hpc", "fast"))
             and (not con_food_z or d["has_food"] == 1)
             and (not con_mall_z or d["has_mall"] == 1)
             and match_operatore_kw(d, op_zona_kw)
         ]
 
         if filtrate_z:
-            st.caption(
-                f"Trovate {len(filtrate_z)} stazioni entro {raggio_disp} km "
-                f"(mostrate le prime {min(25, len(filtrate_z))} più vicine)."
+            hyper_z = sorted(
+                [d for d in filtrate_z if classifica_fascia_potenza(d) == "hyper"],
+                key=lambda x: x["Distanza"],
             )
-            for item in filtrate_z[:25]:
-                render_card_colonnina_generica(item, mostra_km=False)
+            hpc_z = sorted(
+                [d for d in filtrate_z if classifica_fascia_potenza(d) == "hpc"],
+                key=lambda x: x["Distanza"],
+            )
+            fast_z = sorted(
+                [d for d in filtrate_z if classifica_fascia_potenza(d) == "fast"],
+                key=lambda x: x["Distanza"],
+            )
+            lente_z = (
+                sorted(
+                    [d for d in filtrate_z if classifica_fascia_potenza(d) == "lenta"],
+                    key=lambda x: x["Distanza"],
+                )
+                if not solo_fast_z
+                else []
+            )
+
+            st.caption(
+                f"Trovate {len(filtrate_z)} stazioni entro {raggio_disp} km — "
+                f"raggruppate per velocità decrescente (fino a 15 stazioni per fascia)."
+            )
+
+            def _render_gruppo_zona(titolo_gruppo, colore_gruppo, lista_gruppo):
+                if not lista_gruppo:
+                    return
+                st.markdown(
+                    f'<div class="ev-step-header" style="border-left-color:{colore_gruppo}; margin-top:14px;">'
+                    f'<span class="ev-step-title">{titolo_gruppo}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if len(lista_gruppo) > 15:
+                    st.caption(f"Mostrate le 15 stazioni più vicine su {len(lista_gruppo)} in questa fascia.")
+                for item in lista_gruppo[:15]:
+                    render_card_colonnina_generica(item, mostra_km=False)
+
+            # Gruppo 1 (sempre in cima, se presenti): Hyper-Fast (>= 400 kW)
+            _render_gruppo_zona(
+                f"⚡ Hyper-Fast (>= 400 kW) ({len(hyper_z)} stazioni)",
+                "#F59E0B",
+                hyper_z,
+            )
+            # Gruppo 2: Ultra-Fast / HPC (150 – 399 kW)
+            _render_gruppo_zona(
+                f"🚀 Ultra-Fast / HPC (150 – 399 kW) ({len(hpc_z)} stazioni)",
+                "#10B981",
+                hpc_z,
+            )
+            # Gruppo 3: Fast DC (50 – 149 kW)
+            _render_gruppo_zona(
+                f"🔌 Fast DC (50 – 149 kW) ({len(fast_z)} stazioni)",
+                "#3B82F6",
+                fast_z,
+            )
+            # Gruppo 4 (solo se non è attiva la spunta "Solo Fast/HPC"): Lente / AC (< 50 kW)
+            if not solo_fast_z:
+                _render_gruppo_zona(
+                    f"🐢 Lente / AC (< 50 kW) ({len(lente_z)} stazioni)",
+                    "#64748B",
+                    lente_z,
+                )
         else:
             st.markdown(
                 '<div class="ev-card" style="border-left-color:#64748B;">'
@@ -4245,6 +5112,7 @@ with _col_out_r:
             "cfg_expanded",
             "sel_auto",
             "last_auto_sel",
+            "num_costo_casa",
         ):
             st.session_state.pop(chiave, None)
         for chiave in list(st.session_state.keys()):
