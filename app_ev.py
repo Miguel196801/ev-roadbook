@@ -5148,57 +5148,165 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             nome_auto_calc = "Auto Elettrica"
             cons_auto_annuo = 21.0
             cons_extra_annuo = 16.0
+        # Consumo urbano (-15% rispetto all'extraurbano per effetto della frenata rigenerativa in città)
+        cons_urbano_annuo = round(cons_extra_annuo * 0.85, 1)
+
+        def _fmt_int_it(val):
+            return f"{int(round(val)):,}".replace(",", ".")
+
+        def _fmt_risp_it(val):
+            segno = "+" if val >= 0 else "-"
+            return f"{segno}{_fmt_int_it(abs(val))} €"
 
         st.caption(
-            f"Calcolo basato sui consumi medi annui della tua auto ({nome_auto_calc}): "
-            f"{cons_extra_annuo:.1f} kWh/100km fuori autostrada • {cons_auto_annuo:.1f} kWh/100km in autostrada."
+            f"Consumi medi annui stimati ({nome_auto_calc}): "
+            f"🏙️ Urbano {cons_urbano_annuo:.1f} • 🛣️ Misto {cons_extra_annuo:.1f} • 🛣️ Autostrada {cons_auto_annuo:.1f} kWh/100km."
         )
 
-        r1_c1, r1_c2 = st.columns(2)
-        km_anno = int(
-            r1_c1.number_input(
-                "🛣️ Km percorsi all'anno",
-                min_value=1000,
-                max_value=100000,
-                value=15000,
-                step=1000,
-                key="calc_ann_km",
+        # --- SEZIONE 1: TRAGITTO CASA - LAVORO (GIORNI LAVORATIVI REALI) ---
+        st.markdown(
+            '<div class="ev-step-header" style="border-left-color:#10B981; margin-top:8px;">'
+            '<span class="ev-step-title">🏢 1. Tragitto Casa – Lavoro (giorni lavorativi reali)</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        c_l1, c_l2, c_l3 = st.columns(3)
+        dist_casa_lav = float(
+            c_l1.number_input(
+                "📍 Distanza Casa → Lavoro (km sola andata)",
+                min_value=0.0,
+                max_value=300.0,
+                value=15.0,
+                step=1.0,
+                format="%.1f",
+                key="calc_lav_dist",
             )
         )
-        quota_auto_pct = int(
-            r1_c2.slider(
-                "🛣️ Quota autostrada (%)",
+        tratte_giorno = int(
+            c_l2.selectbox(
+                "🔄 Tratte al giorno (2 = A/R, 4 = pausa pranzo)",
+                options=[2, 4, 1, 3, 6],
+                index=0,
+                key="calc_lav_tratte",
+            )
+        )
+        gg_ferie = int(
+            c_l3.number_input(
+                "📅 Giorni chiusura / ferie all'anno",
                 min_value=0,
                 max_value=100,
-                value=30,
-                step=5,
-                key="calc_ann_auto_pct",
+                value=20,
+                step=1,
+                key="calc_lav_ferie",
             )
         )
 
-        r2_c1, r2_c2 = st.columns([2, 1])
-        quota_casa_pct = int(
-            r2_c1.slider(
-                "🏠 Ricariche a Casa (%)",
-                min_value=0,
-                max_value=100,
-                value=90,
-                step=5,
-                key="calc_ann_casa_pct",
-            )
-        )
-        quota_pub_pct = 100 - quota_casa_pct
-        r2_c2.markdown(
-            f'<div style="margin-top:26px; padding:8px 10px; border-radius:10px; background:#161A23; '
-            f'border:1px solid #2A2E39; text-align:center; font-size:0.86rem; font-weight:700; color:#E2E8F0;">'
-            f'🏠 {quota_casa_pct}% Casa / ⚡ {quota_pub_pct}% Pubbliche'
+        gg_eff = max(0, 252 - gg_ferie)
+        km_lavoro = round(dist_casa_lav * tratte_giorno * gg_eff)
+        st.markdown(
+            f'<div class="ev-info-box" style="margin-top:2px; margin-bottom:10px;">'
+            f'📆 <strong>= {gg_eff} giorni lavorativi effettivi/anno ({_fmt_int_it(km_lavoro)} km)</strong> '
+            f'<span style="color:#94A3B8;">(252 giorni lavorativi base italiani meno {gg_ferie} gg di ferie/chiusura)</span>'
             f'</div>',
             unsafe_allow_html=True,
         )
 
-        r3_c1, r3_c2 = st.columns(2)
+        opzioni_percorso_lav = [
+            "🏙️ Urbano",
+            "🛣️ Misto (Urbano + Extraurbano)",
+            "🛣️ Prevalenza Autostrada",
+        ]
+        tipo_percorso_lav = st.radio(
+            "Tipo percorso Casa – Lavoro",
+            opzioni_percorso_lav,
+            index=1,
+            horizontal=True,
+            key="calc_lav_tipo_perc",
+        )
+        if tipo_percorso_lav == "🏙️ Urbano":
+            cons_lavoro = cons_urbano_annuo
+        elif tipo_percorso_lav == "🛣️ Prevalenza Autostrada":
+            cons_lavoro = cons_auto_annuo
+        else:
+            cons_lavoro = cons_extra_annuo
+
+        cl_s1, cl_s2 = st.columns([2, 1])
+        quota_casa_lav = int(
+            cl_s1.slider(
+                "🏠 Ricariche a Casa per Casa – Lavoro (%)",
+                min_value=0,
+                max_value=100,
+                value=95,
+                step=5,
+                key="calc_lav_casa_pct",
+            )
+        )
+        cl_s2.markdown(
+            f'<div style="margin-top:24px; padding:8px 10px; border-radius:10px; background:#161A23; '
+            f'border:1px solid #2A2E39; text-align:center; font-size:0.84rem; font-weight:700; color:#E2E8F0;">'
+            f'🏠 {quota_casa_lav}% Casa / ⚡ {100 - quota_casa_lav}% Pubbliche'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # --- SEZIONE 2: VIAGGI EXTRA, WEEKEND E TRASFERTE ---
+        st.markdown(
+            '<div class="ev-step-header" style="border-left-color:#3B82F6; margin-top:12px;">'
+            '<span class="ev-step-title">🏖️ 2. Viaggi Extra, Weekend e Trasferte</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        ce_1, ce_2 = st.columns(2)
+        km_extra_annui = int(
+            ce_1.number_input(
+                "🗺️ Km extra annui (weekend, gite, vacanze)",
+                min_value=0,
+                max_value=100000,
+                value=7000,
+                step=500,
+                key="calc_ext_km",
+            )
+        )
+        quota_auto_ext = int(
+            ce_2.slider(
+                "🛣️ Quota autostrada viaggi extra (%)",
+                min_value=0,
+                max_value=100,
+                value=50,
+                step=5,
+                key="calc_ext_auto_pct",
+            )
+        )
+
+        ce_s1, ce_s2 = st.columns([2, 1])
+        quota_casa_ext = int(
+            ce_s1.slider(
+                "🏠 Ricariche a Casa sui viaggi extra (%)",
+                min_value=0,
+                max_value=100,
+                value=80,
+                step=5,
+                key="calc_ext_casa_pct",
+            )
+        )
+        ce_s2.markdown(
+            f'<div style="margin-top:24px; padding:8px 10px; border-radius:10px; background:#161A23; '
+            f'border:1px solid #2A2E39; text-align:center; font-size:0.84rem; font-weight:700; color:#E2E8F0;">'
+            f'🏠 {quota_casa_ext}% Casa / ⚡ {100 - quota_casa_ext}% Pubbliche'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # --- PARAMETRI TARIFFE CONDIVISI (SU UNA RIGA COMPATTA) ---
+        st.markdown(
+            '<div class="ev-step-header" style="border-left-color:#F59E0B; margin-top:12px;">'
+            '<span class="ev-step-title">💶 Tariffe Energia &amp; Riferimento Termica</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        t1, t2, t3, t4 = st.columns(4)
         prezzo_casa = float(
-            r3_c1.number_input(
+            t1.number_input(
                 "🏠 Prezzo Casa (€/kWh)",
                 min_value=0.05,
                 max_value=1.00,
@@ -5208,8 +5316,8 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             )
         )
         prezzo_pub = float(
-            r3_c2.number_input(
-                "⚡ Prezzo medio Ricarica Pubblica (€/kWh)",
+            t2.number_input(
+                "⚡ Prezzo Pubblica (€/kWh)",
                 min_value=0.10,
                 max_value=1.50,
                 value=0.65,
@@ -5219,12 +5327,9 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 key="calc_ann_prezzo_pub",
             )
         )
-        r3_c2.caption("Modifica se usi abbonamenti, es. 0.45 - 0.55 €/kWh")
-
-        r4_c1, r4_c2 = st.columns(2)
         prezzo_carb = float(
-            r4_c1.number_input(
-                "⛽ Prezzo carburante (€/L)",
+            t3.number_input(
+                "⛽ Carburante (€/L)",
                 min_value=0.80,
                 max_value=3.50,
                 value=2.05,
@@ -5235,8 +5340,8 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             )
         )
         consumo_kml = float(
-            r4_c2.number_input(
-                "⛽ Consumo medio termica (km/L)",
+            t4.number_input(
+                "⛽ Termica (km/L)",
                 min_value=5.0,
                 max_value=35.0,
                 value=16.0,
@@ -5246,42 +5351,88 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             )
         )
 
-        # Calcolo energetico ed economico annuale
-        km_auto = km_anno * (quota_auto_pct / 100.0)
-        km_extra = km_anno - km_auto
-        kwh_annui = (km_auto / 100.0) * cons_auto_annuo + (km_extra / 100.0) * cons_extra_annuo
-        prezzo_medio_ev = (quota_casa_pct / 100.0) * prezzo_casa + (quota_pub_pct / 100.0) * prezzo_pub
-        spesa_ev_anno = kwh_annui * prezzo_medio_ev
+        # --- CALCOLO SEPARATO CASA-LAVORO / VIAGGI EXTRA / TOTALE ---
+        kwh_lavoro = (km_lavoro / 100.0) * cons_lavoro
+        prezzo_ev_lav = (quota_casa_lav / 100.0) * prezzo_casa + ((100 - quota_casa_lav) / 100.0) * prezzo_pub
+        spesa_ev_lav = kwh_lavoro * prezzo_ev_lav
+        spesa_term_lav = (km_lavoro / max(1.0, consumo_kml)) * prezzo_carb
+        risp_lav = spesa_term_lav - spesa_ev_lav
 
-        litri_annui = km_anno / max(1.0, consumo_kml)
-        spesa_termica_anno = litri_annui * prezzo_carb
+        km_ext_auto = km_extra_annui * (quota_auto_ext / 100.0)
+        km_ext_misto = km_extra_annui - km_ext_auto
+        kwh_extra = (km_ext_auto / 100.0) * cons_auto_annuo + (km_ext_misto / 100.0) * cons_extra_annuo
+        prezzo_ev_ext = (quota_casa_ext / 100.0) * prezzo_casa + ((100 - quota_casa_ext) / 100.0) * prezzo_pub
+        spesa_ev_ext = kwh_extra * prezzo_ev_ext
+        spesa_term_ext = (km_extra_annui / max(1.0, consumo_kml)) * prezzo_carb
+        risp_ext = spesa_term_ext - spesa_ev_ext
 
-        risparmio_anno = spesa_termica_anno - spesa_ev_anno
-        risparmio_5anni = risparmio_anno * 5.0
-        col_risp = "#34D399" if risparmio_anno >= 0 else "#F87171"
-        segno_risp = "+" if risparmio_anno >= 0 else "-"
-        euro_100_ev = (spesa_ev_anno / km_anno) * 100.0 if km_anno > 0 else 0.0
-        euro_100_term = (spesa_termica_anno / km_anno) * 100.0 if km_anno > 0 else 0.0
+        km_tot_annui = km_lavoro + km_extra_annui
+        kwh_tot_annui = kwh_lavoro + kwh_extra
+        litri_tot_annui = km_tot_annui / max(1.0, consumo_kml)
+        spesa_ev_tot = spesa_ev_lav + spesa_ev_ext
+        spesa_term_tot = spesa_term_lav + spesa_term_ext
+        risp_tot = spesa_term_tot - spesa_ev_tot
+        risp_5anni = risp_tot * 5.0
 
-        def _fmt_int_it(val):
-            return f"{int(round(val)):,}".replace(",", ".")
+        col_rl = "#34D399" if risp_lav >= 0 else "#F87171"
+        col_re = "#34D399" if risp_ext >= 0 else "#F87171"
+        col_rt = "#34D399" if risp_tot >= 0 else "#F87171"
+        euro_100_ev = (spesa_ev_tot / km_tot_annui) * 100.0 if km_tot_annui > 0 else 0.0
+        euro_100_term = (spesa_term_tot / km_tot_annui) * 100.0 if km_tot_annui > 0 else 0.0
+
+        # --- RIEPILOGO FINALE SU 3 RIGHE CHIARE + PROIEZIONE 5 ANNI ---
+        st.markdown(
+            f'<div style="overflow-x:auto; margin-top:12px; border-radius:12px; border:1px solid #2A2E39; background:#131722;">'
+            f'<table style="width:100%; border-collapse:collapse; font-size:0.9rem; color:#F1F5F9;">'
+            f'<thead>'
+            f'<tr style="background:#1A202E; border-bottom:1px solid #2A2E39; text-align:left;">'
+            f'<th style="padding:10px 12px; color:#CBD5E1; font-weight:700;">Categoria &amp; Km</th>'
+            f'<th style="padding:10px 10px; color:#60A5FA; font-weight:700; text-align:right;">⚡ Costo Elettrico</th>'
+            f'<th style="padding:10px 10px; color:#FBBF24; font-weight:700; text-align:right;">⛽ Costo Termico</th>'
+            f'<th style="padding:10px 12px; color:#34D399; font-weight:700; text-align:right;">💰 Risparmio Netto</th>'
+            f'</tr>'
+            f'</thead>'
+            f'<tbody>'
+            f'<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">'
+            f'<td style="padding:10px 12px; font-weight:600;">🏢 Casa – Lavoro ({_fmt_int_it(km_lavoro)} km)</td>'
+            f'<td style="padding:10px 10px; text-align:right; color:#93C5FD; font-weight:600;">{_fmt_int_it(spesa_ev_lav)} €</td>'
+            f'<td style="padding:10px 10px; text-align:right; color:#FDE68A; font-weight:600;">{_fmt_int_it(spesa_term_lav)} €</td>'
+            f'<td style="padding:10px 12px; text-align:right; color:{col_rl}; font-weight:700;">{_fmt_risp_it(risp_lav)}</td>'
+            f'</tr>'
+            f'<tr style="border-bottom:1px solid rgba(255,255,255,0.08);">'
+            f'<td style="padding:10px 12px; font-weight:600;">🏖️ Viaggi Extra ({_fmt_int_it(km_extra_annui)} km)</td>'
+            f'<td style="padding:10px 10px; text-align:right; color:#93C5FD; font-weight:600;">{_fmt_int_it(spesa_ev_ext)} €</td>'
+            f'<td style="padding:10px 10px; text-align:right; color:#FDE68A; font-weight:600;">{_fmt_int_it(spesa_term_ext)} €</td>'
+            f'<td style="padding:10px 12px; text-align:right; color:{col_re}; font-weight:700;">{_fmt_risp_it(risp_ext)}</td>'
+            f'</tr>'
+            f'<tr style="background:rgba(16,185,129,0.14); border-top:2px solid rgba(16,185,129,0.45);">'
+            f'<td style="padding:12px 12px; font-weight:800; color:#FFFFFF;">🏆 TOTALE ANNUO ({_fmt_int_it(km_tot_annui)} km)</td>'
+            f'<td style="padding:12px 10px; text-align:right; color:#60A5FA; font-weight:800;">{_fmt_int_it(spesa_ev_tot)} €</td>'
+            f'<td style="padding:12px 10px; text-align:right; color:#FBBF24; font-weight:800;">{_fmt_int_it(spesa_term_tot)} €</td>'
+            f'<td style="padding:12px 12px; text-align:right; color:{col_rt}; font-weight:900; font-size:0.98rem;">{_fmt_risp_it(risp_tot)}</td>'
+            f'</tr>'
+            f'</tbody>'
+            f'</table>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         st.markdown(
-            f'<div class="ev-kpi-grid" style="margin-top:10px;">'
-            f'<div class="ev-kpi" style="border-top:3px solid #3B82F6;">'
-            f'<div class="ev-kpi-label">⚡ Spesa Elettrica / anno</div>'
-            f'<div class="ev-kpi-val" style="color:#60A5FA;">{_fmt_int_it(spesa_ev_anno)} €</div>'
-            f'<div class="ev-kpi-sub">{_fmt_int_it(kwh_annui)} kWh • ~{euro_100_ev:.2f} €/100km</div>'
+            f'<div class="ev-card" style="margin-top:10px; border-left:5px solid {col_rt}; '
+            f'background:linear-gradient(135deg, #132C24 0%, #1A202E 100%); padding:14px 16px;">'
+            f'<div style="display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:10px;">'
+            f'<div>'
+            f'<div style="font-size:0.82rem; color:#CBD5E1; font-weight:600;">💰 Risparmio Netto Totale Annuo</div>'
+            f'<div style="font-size:1.35rem; font-weight:900; color:{col_rt};">{_fmt_risp_it(risp_tot)} / anno</div>'
+            f'<div style="font-size:0.80rem; color:#94A3B8; margin-top:2px;">'
+            f'⚡ {_fmt_int_it(kwh_tot_annui)} kWh (~{euro_100_ev:.2f} €/100km) vs ⛽ {_fmt_int_it(litri_tot_annui)} L (~{euro_100_term:.2f} €/100km)'
             f'</div>'
-            f'<div class="ev-kpi" style="border-top:3px solid #F59E0B;">'
-            f'<div class="ev-kpi-label">⛽ Spesa Termica / anno</div>'
-            f'<div class="ev-kpi-val" style="color:#FBBF24;">{_fmt_int_it(spesa_termica_anno)} €</div>'
-            f'<div class="ev-kpi-sub">{_fmt_int_it(litri_annui)} L • ~{euro_100_term:.2f} €/100km</div>'
             f'</div>'
-            f'<div class="ev-kpi" style="border-top:3px solid {col_risp};">'
-            f'<div class="ev-kpi-label">💰 Risparmio stimato</div>'
-            f'<div class="ev-kpi-val" style="color:{col_risp};">{segno_risp}{_fmt_int_it(abs(risparmio_anno))} € / anno</div>'
-            f'<div class="ev-kpi-sub" style="color:#E2E8F0; font-weight:700;">In 5 anni: {segno_risp}{_fmt_int_it(abs(risparmio_5anni))} €</div>'
+            f'<div style="text-align:right; padding:8px 14px; border-radius:10px; '
+            f'background:rgba(15,23,42,0.72); border:1px solid rgba(52,211,153,0.35);">'
+            f'<div style="font-size:0.78rem; color:#CBD5E1; font-weight:600;">📈 Proiezione su 5 anni</div>'
+            f'<div style="font-size:1.22rem; font-weight:900; color:{col_rt};">{_fmt_risp_it(risp_5anni)}</div>'
+            f'</div>'
             f'</div>'
             f'</div>',
             unsafe_allow_html=True,
