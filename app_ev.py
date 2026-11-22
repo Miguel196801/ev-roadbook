@@ -5307,17 +5307,18 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         t1, t2, t3, t4 = st.columns(4)
         prezzo_casa = float(
             t1.number_input(
-                "🏠 Prezzo Casa (€/kWh)",
+                "🏠 Casa (€/kWh)",
                 min_value=0.05,
                 max_value=1.00,
                 step=0.01,
                 format="%.2f",
+                help="Tariffa energia domestica in €/kWh",
                 key="calc_ann_prezzo_casa",
             )
         )
         prezzo_pub = float(
             t2.number_input(
-                "⚡ Prezzo Pubblica (€/kWh)",
+                "⚡ Pubblica (€/kWh)",
                 min_value=0.10,
                 max_value=1.50,
                 value=0.65,
@@ -5347,6 +5348,7 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 value=16.0,
                 step=0.5,
                 format="%.1f",
+                help="Consumo medio dell'auto termica di confronto",
                 key="calc_ann_kml",
             )
         )
