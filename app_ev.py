@@ -1642,9 +1642,209 @@ def analizza_colonnine_tratta(db, pts, etichetta_tratta, offset_km=0.0, evita_au
     return route_c
 
 
-def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=False):
+CITTA_NODI_ITALIA = (
+    # Nord-Est e Trentino-Alto Adige
+    (47.003, 11.505, "Brennero"),
+    (46.895, 11.431, "Vipiteno"),
+    (46.715, 11.656, "Bressanone"),
+    (46.640, 11.566, "Chiusa"),
+    (46.498, 11.355, "Bolzano"),
+    (46.671, 11.159, "Merano"),
+    (46.796, 11.936, "Brunico"),
+    (46.070, 11.121, "Trento"),
+    (45.891, 11.040, "Rovereto"),
+    (45.557, 10.768, "Affi"),
+    (45.438, 10.992, "Verona"),
+    (45.545, 11.535, "Vicenza"),
+    (45.406, 11.877, "Padova"),
+    (45.490, 12.242, "Mestre"),
+    (45.441, 12.316, "Venezia"),
+    (45.667, 12.242, "Treviso"),
+    (46.140, 12.216, "Belluno"),
+    (46.538, 12.137, "Cortina"),
+    (45.956, 12.660, "Pordenone"),
+    (46.071, 13.235, "Udine"),
+    (45.650, 13.777, "Trieste"),
+    (45.070, 11.790, "Rovigo"),
+    # Nord-Ovest e Lombardia
+    (45.156, 10.791, "Mantova"),
+    (45.541, 10.212, "Brescia"),
+    (45.698, 9.677, "Bergamo"),
+    (45.464, 9.190, "Milano"),
+    (45.808, 9.085, "Como"),
+    (45.821, 8.826, "Varese"),
+    (45.185, 9.158, "Pavia"),
+    (45.133, 10.022, "Cremona"),
+    (45.447, 8.622, "Novara"),
+    (45.070, 7.687, "Torino"),
+    (45.737, 7.317, "Aosta"),
+    (44.912, 8.615, "Alessandria"),
+    (44.384, 7.543, "Cuneo"),
+    (44.406, 8.946, "Genova"),
+    (44.309, 8.477, "Savona"),
+    (43.889, 8.039, "Imperia"),
+    (44.102, 9.824, "La Spezia"),
+    # Emilia-Romagna e Centro
+    (45.052, 9.693, "Piacenza"),
+    (44.801, 10.328, "Parma"),
+    (44.699, 10.631, "Reggio Emilia"),
+    (44.647, 10.925, "Modena"),
+    (44.495, 11.343, "Bologna"),
+    (44.838, 11.620, "Ferrara"),
+    (44.353, 11.714, "Imola"),
+    (44.418, 12.203, "Ravenna"),
+    (44.223, 12.041, "Forlì"),
+    (44.140, 12.243, "Cesena"),
+    (44.068, 12.569, "Rimini"),
+    (43.910, 12.913, "Pesaro"),
+    (43.840, 13.019, "Fano"),
+    (43.713, 13.218, "Senigallia"),
+    (43.616, 13.519, "Ancona"),
+    (43.307, 13.729, "Civitanova"),
+    (42.954, 13.881, "S. Benedetto"),
+    (43.770, 11.256, "Firenze"),
+    (43.878, 11.102, "Prato"),
+    (43.930, 10.918, "Pistoia"),
+    (43.843, 10.503, "Lucca"),
+    (43.873, 10.251, "Viareggio"),
+    (43.723, 10.402, "Pisa"),
+    (43.548, 10.311, "Livorno"),
+    (43.463, 11.880, "Arezzo"),
+    (43.319, 11.331, "Siena"),
+    (42.764, 11.112, "Grosseto"),
+    (43.111, 12.391, "Perugia"),
+    (42.719, 12.111, "Orvieto"),
+    (42.564, 12.643, "Terni"),
+    (42.421, 12.108, "Viterbo"),
+    (42.405, 12.857, "Rieti"),
+    (42.350, 13.399, "L'Aquila"),
+    (42.462, 14.216, "Pescara"),
+    (42.112, 14.708, "Vasto"),
+    (42.003, 14.997, "Termoli"),
+    (41.903, 12.496, "Roma"),
+    (41.640, 13.351, "Frosinone"),
+    (41.487, 13.833, "Cassino"),
+    (41.467, 12.904, "Latina"),
+    # Sud e Isole
+    (41.072, 14.331, "Caserta"),
+    (40.852, 14.268, "Napoli"),
+    (40.682, 14.768, "Salerno"),
+    (40.914, 14.791, "Avellino"),
+    (41.130, 14.783, "Benevento"),
+    (41.462, 15.545, "Foggia"),
+    (41.117, 16.872, "Bari"),
+    (40.464, 17.247, "Taranto"),
+    (40.633, 17.942, "Brindisi"),
+    (40.352, 18.175, "Lecce"),
+    (40.640, 15.805, "Potenza"),
+    (40.666, 16.604, "Matera"),
+    (39.298, 16.254, "Cosenza"),
+    (38.967, 16.309, "Lamezia"),
+    (38.910, 16.588, "Catanzaro"),
+    (38.111, 15.647, "Reggio Cal."),
+    (38.194, 15.554, "Messina"),
+    (37.508, 15.083, "Catania"),
+    (37.075, 15.287, "Siracusa"),
+    (38.116, 13.361, "Palermo"),
+    (38.017, 12.536, "Trapani"),
+    (37.311, 13.577, "Agrigento"),
+    (40.923, 9.496, "Olbia"),
+    (40.726, 8.559, "Sassari"),
+    (39.906, 8.590, "Oristano"),
+    (39.224, 9.122, "Cagliari"),
+)
+
+
+CITTA_CAPOLUOGHI_PRIORITARI = frozenset(
+    {
+        "Bolzano", "Trento", "Verona", "Vicenza", "Padova", "Venezia", "Mestre", "Treviso",
+        "Udine", "Trieste", "Belluno", "Pordenone", "Rovigo", "Mantova", "Brescia", "Bergamo",
+        "Milano", "Como", "Varese", "Pavia", "Cremona", "Novara", "Torino", "Aosta", "Alessandria",
+        "Cuneo", "Genova", "Savona", "Imperia", "La Spezia", "Piacenza", "Parma", "Reggio Emilia",
+        "Modena", "Bologna", "Ferrara", "Ravenna", "Forlì", "Cesena", "Rimini", "Pesaro", "Ancona",
+        "Firenze", "Prato", "Pistoia", "Lucca", "Pisa", "Livorno", "Arezzo", "Siena", "Grosseto",
+        "Perugia", "Terni", "Viterbo", "Rieti", "L'Aquila", "Pescara", "Roma", "Frosinone",
+        "Latina", "Caserta", "Napoli", "Salerno", "Avellino", "Benevento", "Foggia", "Bari",
+        "Taranto", "Brindisi", "Lecce", "Potenza", "Matera", "Cosenza", "Catanzaro", "Reggio Cal.",
+        "Messina", "Catania", "Siracusa", "Palermo", "Trapani", "Agrigento", "Olbia", "Sassari",
+        "Oristano", "Cagliari",
+    }
+)
+
+
+def estrai_citta_passaggio(pts, km_tot, orig_nome="", dest_nome="", max_nodi=4):
     """
-    Calcola percorso (andata e opzionale ritorno) e colonnine lungo la tratta.
+    Estrae al massimo 3-4 città/nodi principali realmente attraversati lungo il tracciato OSRM
+    dando priorità massima ai capoluoghi di provincia (Verona, Bolzano, Trento, Vicenza, Padova,
+    Brescia, Bergamo, Milano, Bologna, Modena, Firenze, ecc.) rispetto a località minori come Affi.
+    """
+    if not pts or km_tot < 45.0:
+        return []
+    orig_low = str(orig_nome or "").strip().lower()
+    dest_low = str(dest_nome or "").strip().lower()
+    margine_estremi = max(14.0, km_tot * 0.10)
+    limite_nodi = 3 if km_tot < 240.0 else min(4, int(max_nodi))
+
+    capoluoghi = []
+    minori = []
+    for lat_c, lon_c, nome_c in CITTA_NODI_ITALIA:
+        n_low = nome_c.lower()
+        if (orig_low and (n_low in orig_low or orig_low in n_low)) or (
+            dest_low and (n_low in dest_low or dest_low in n_low)
+        ):
+            continue
+        e_capoluogo = nome_c in CITTA_CAPOLUOGHI_PRIORITARI
+        # Soglia leggermente più ampia (18 km) per i capoluoghi i cui svincoli autostradali passano in tangenziale
+        soglia_dist = 18.0 if e_capoluogo else 8.0
+        d_rt, km_c = project(lat_c, lon_c, pts)
+        if d_rt <= soglia_dist and margine_estremi <= km_c <= (km_tot - margine_estremi):
+            item = {
+                "nome": nome_c,
+                "km": round(float(km_c), 1),
+                "d_rt": round(float(d_rt), 2),
+                "capoluogo": e_capoluogo,
+            }
+            if e_capoluogo:
+                capoluoghi.append(item)
+            else:
+                minori.append(item)
+
+    if not capoluoghi and not minori:
+        return []
+
+    gap_min = max(26.0, km_tot / (limite_nodi + 2.0))
+
+    # 1) Priorità massima ai capoluoghi di provincia ben spaziati lungo la tratta
+    capoluoghi.sort(key=lambda x: x["km"])
+    scelti = []
+    for cand in capoluoghi:
+        if not scelti:
+            scelti.append(cand)
+        elif cand["km"] - scelti[-1]["km"] >= gap_min:
+            scelti.append(cand)
+        elif cand["d_rt"] < scelti[-1]["d_rt"] - 1.5:
+            scelti[-1] = cand
+
+    if len(scelti) > limite_nodi:
+        indici = [round(k * (len(scelti) - 1) / (limite_nodi - 1)) for k in range(limite_nodi)]
+        scelti = [scelti[idx] for idx in sorted(set(indici))]
+
+    # 2) Integra località minori (es. Affi, Chiusa) SOLO se i capoluoghi trovati sono meno di 2
+    if len(scelti) < 2 and minori:
+        minori.sort(key=lambda x: (x["nome"] == "Affi", x["d_rt"], x["km"]))
+        for cand in minori:
+            if len(scelti) >= 2:
+                break
+            if all(abs(cand["km"] - s["km"]) >= gap_min for s in scelti):
+                scelti.append(cand)
+
+    scelti.sort(key=lambda x: x["km"])
+    return [{"nome": c["nome"], "km": c["km"], "capoluogo": c["capoluogo"]} for c in scelti]
+
+
+def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=False, orig_nome="", dest_nome=""):
+    """
+    Calcola percorso (andata e opzionale ritorno), colonnine e città principali attraversate lungo la tratta.
     Se evita_autostrade=True e OSRM non fornisce routes[1], stima localmente
     l'alternativa statale/extraurbana (km * 1.12 e durata a 58 km/h medi).
     """
@@ -1668,6 +1868,8 @@ def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=Fa
         evita_autostrade=evita_autostrade,
         km_min=1.0,
     )
+    nodi_andata = estrai_citta_passaggio(pts1, km1, orig_nome=orig_nome, dest_nome=dest_nome, max_nodi=4)
+    nodi_ritorno = []
     all_ch, tot_km, tot_dur = list(ch1), km1, dur1
     dur2 = 0
 
@@ -1691,11 +1893,12 @@ def costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=Fa
             offset_km=km1,
             evita_autostrade=evita_autostrade,
         )
+        nodi_ritorno = estrai_citta_passaggio(pts2, km2, orig_nome=dest_nome, dest_nome=orig_nome, max_nodi=4)
         all_ch = ch1 + ch2
         tot_km = km1 + km2
         tot_dur = dur1 + dur2
 
-    return all_ch, km1, tot_km, tot_dur, dur1, dur2
+    return all_ch, km1, tot_km, tot_dur, dur1, dur2, nodi_andata, nodi_ritorno
 
 
 def estrai_info_operatore(scelta_operatore, operatore_custom=""):
@@ -1958,6 +2161,10 @@ def trova_jolly_stazione(stazione, arr_pct, pool_jolly, km_per_pct, km_fine_trat
         "livello": livello,
         "riserva_estrema": livello == 3,
         "in_ads": _e_ads(cand),
+        "lat": cand.get("lat"),
+        "lon": cand.get("lon"),
+        "city": cand.get("city") or cand.get("comune") or cand.get("municipality"),
+        "address": cand.get("address") or cand.get("indirizzo"),
     }
 
 
@@ -3984,6 +4191,780 @@ def render_card_confronto_strade(sol_auto, sol_extra, res):
     )
 
 
+def _tronca_testo_svg(testo, max_len=23):
+    """Accorcia in modo pulito una stringa per le etichette del grafico SVG senza spezzare entità HTML."""
+    s = str(testo or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1].rstrip(" -•,") + "…"
+
+
+def _pulisci_nome_gestore_svg(testo, max_len=26):
+    """
+    Abbrevia in modo intelligente le ragioni sociali lunghe nei fumetti SVG di Sosta e Jolly
+    (es. 'Autostrada del Brennero S.p.A.' -> 'A22 Brennero') rimuovendo suffissi societari.
+    """
+    s = str(testo or "").strip()
+    if not s:
+        return s
+    s = re.sub(r"autostrada\s+del\s+brennero(?:\s+s\.?p\.?a\.?)?", "A22 Brennero", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b(?:s\.p\.a\.?|s\.r\.l\.?|spa|srl|italia)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s{2,}", " ", s).strip(" -•,")
+    return _tronca_testo_svg(s, max_len=max_len)
+
+
+@st.cache_data(ttl=86400)
+def _reverse_comune_coordinate(lat_r, lon_r):
+    """
+    Recupera in modo leggero e cachato (24h) il nome del comune italiano dalle coordinate
+    della stazione, con timeout breve e fallback istantaneo sulle città locali se offline.
+    """
+    try:
+        loc = Nominatim(user_agent="ev_roadbook_it_2026", timeout=3).reverse(
+            (float(lat_r), float(lon_r)),
+            language="it",
+            zoom=10,
+            addressdetails=True,
+        )
+        if loc and isinstance(getattr(loc, "raw", None), dict):
+            addr = loc.raw.get("address") or {}
+            for chiave in ("city", "town", "village", "municipality", "hamlet", "suburb"):
+                val = str(addr.get(chiave) or "").strip()
+                if val:
+                    # Pulisce eventuali nomi bilingue es. "Bolzano - Bozen" -> "Bolzano"
+                    return re.split(r"\s*[-/]\s*", val)[0].strip()
+    except Exception:
+        pass
+
+    # Fallback locale istantaneo sulle città principali entro 12 km
+    best_nome = ""
+    best_d = 12.0
+    for lat_c, lon_c, nome_c in CITTA_NODI_ITALIA:
+        d = haversine_km(float(lat_r), float(lon_r), lat_c, lon_c)
+        if d < best_d:
+            best_d = d
+            best_nome = nome_c
+    return best_nome
+
+
+def _estrai_comune_stazione(stazione):
+    """Estrae il comune/località dalla scheda della colonnina (o da coordinate GPS cachate)."""
+    if not isinstance(stazione, dict):
+        return ""
+    for chiave in ("city", "comune", "municipality", "localita"):
+        val = str(stazione.get(chiave) or "").strip()
+        if val:
+            return re.split(r"\s*[-/]\s*", val)[0].strip()
+
+    addr = str(stazione.get("address") or stazione.get("indirizzo") or "").strip()
+    if addr:
+        parti = [p.strip() for p in addr.split(",") if p.strip()]
+        if len(parti) >= 2:
+            cand_addr = re.sub(r"\b\d{5}\b", "", parti[-2]).strip()
+            if cand_addr:
+                return re.split(r"\s*[-/]\s*", cand_addr)[0].strip()
+
+    lat_v = stazione.get("lat")
+    lon_v = stazione.get("lon")
+    if lat_v is not None and lon_v is not None:
+        return _reverse_comune_coordinate(round(float(lat_v), 3), round(float(lon_v), 3))
+    return ""
+
+
+def _formatta_etichetta_stazione_svg(stazione, fallback_nome="Sosta", max_len=26):
+    """
+    Compone l'etichetta compatta per i riquadri SVG di Sosta e Jolly:
+    nome gestore pulito + eventuale comune tra parentesi (es. 'Be Charge (Montebello)'),
+    troncato in modo pulito entro max_len (26 caratteri complessivi con '...').
+    """
+    nome_base = _pulisci_nome_gestore_svg(stazione.get("Stazione", fallback_nome), max_len=max_len)
+    comune = _estrai_comune_stazione(stazione)
+    if comune and comune.lower() not in nome_base.lower():
+        completo = f"{nome_base} ({comune})"
+        if len(completo) <= max_len:
+            return completo
+        # Se supera 26 caratteri, prova ad accorciare il comune alla prima parola (es. Montebello Vicentino -> Montebello)
+        comune_breve = comune.split()[0] if " " in comune else comune
+        completo_breve = f"{nome_base} ({comune_breve})"
+        if len(completo_breve) <= max_len:
+            return completo_breve
+        return completo[: max_len - 3].rstrip(" -•,(") + "..."
+    if len(nome_base) <= max_len:
+        return nome_base
+    return nome_base[: max_len - 3].rstrip(" -•,") + "..."
+
+
+def genera_svg_roadbook_visivo(
+    titolo_tratta,
+    orig_nome,
+    dest_nome,
+    km_tratta,
+    pct_partenza,
+    pct_arrivo,
+    soste_tratta,
+    nodi_citta,
+    km_per_pct,
+    km_offset=0.0,
+):
+    """
+    Genera un grafico SVG vettoriale leggero e responsive su sfondo scuro (#0F172A)
+    con strada sinuosa, partenza, città di passaggio, macchinina azzurra con fumetto %,
+    soste di ricarica principali, Piano B / Jolly, arrivo e legenda compatta in basso.
+    """
+    km_tot = max(1.0, float(km_tratta or 1.0))
+    km_p_pct = max(0.5, float(km_per_pct or 3.5))
+
+    def _xy_strada(t_val):
+        t_c = max(0.0, min(1.0, float(t_val)))
+        x = 64.0 + t_c * 672.0
+        y = 168.0 + 34.0 * math.sin(t_c * 2.0 * math.pi - 0.35)
+        return x, y
+
+    def _angolo_strada(t_val):
+        dt = 0.004
+        x1, y1 = _xy_strada(max(0.0, t_val - dt))
+        x2, y2 = _xy_strada(min(1.0, t_val + dt))
+        return math.degrees(math.atan2(y2 - y1, x2 - x1))
+
+    # Normalizza le soste della tratta con chilometraggio relativo (azzerato da inizio tratta)
+    soste_norm = []
+    for s in soste_tratta or []:
+        km_rel = max(0.5, min(km_tot - 0.5, float(s.get("Km", 0.0)) - float(km_offset)))
+        soste_norm.append({**s, "_km_rel": km_rel})
+    soste_norm.sort(key=lambda x: x["_km_rel"])
+
+    def _stima_pct_a_km(km_q):
+        curr_k = 0.0
+        curr_p = float(pct_partenza)
+        for s in soste_norm:
+            if s["_km_rel"] < km_q - 0.05:
+                curr_k = s["_km_rel"]
+                curr_p = float(s.get("charge_to", curr_p))
+        val = curr_p - (km_q - curr_k) / km_p_pct
+        return max(0.0, min(100.0, val))
+
+    # Costruisce i marcatori interni (soste, jolly e città di passaggio)
+    nodi_interni = []
+    km_soste_e_jolly = []
+
+    for s in soste_norm:
+        km_s = s["_km_rel"]
+        km_soste_e_jolly.append(km_s)
+        nodi_interni.append(
+            {
+                "tipo": "stop",
+                "km": km_s,
+                "t": km_s / km_tot,
+                "nome": _formatta_etichetta_stazione_svg(s, fallback_nome="Sosta", max_len=26),
+                "min_ric": int(s.get("minuti_ricarica", 0)),
+                "arr_pct": float(s.get("arr_pct", _stima_pct_a_km(km_s))),
+                "chg_pct": float(s.get("charge_to", 80.0)),
+            }
+        )
+        jolly = s.get("jolly")
+        if jolly:
+            delta_j = max(1.0, float(jolly.get("delta_km", 10.0)))
+            km_j = min(km_tot - 1.5, km_s + delta_j)
+            if km_j > km_s + 0.5:
+                km_soste_e_jolly.append(km_j)
+                nodi_interni.append(
+                    {
+                        "tipo": "jolly",
+                        "km": km_j,
+                        "t": km_j / km_tot,
+                        "nome": _formatta_etichetta_stazione_svg(jolly, fallback_nome="Piano B", max_len=26),
+                        "delta_km": delta_j,
+                    }
+                )
+
+    # Aggiunge max 3-4 città principali attraversate dando priorità ai capoluoghi di provincia
+    soglia_vicinanza = max(12.0, km_tot * 0.075)
+    citta_ordinate = sorted(
+        list(nodi_citta or []),
+        key=lambda c: (0 if (c.get("capoluogo") or c.get("nome") in CITTA_CAPOLUOGHI_PRIORITARI) else 1, float(c.get("km", 0.0))),
+    )
+    n_citta_agg = 0
+    for c in citta_ordinate:
+        if n_citta_agg >= 4:
+            break
+        km_c = float(c.get("km", 0.0))
+        if km_c < max(12.0, km_tot * 0.10) or km_c > km_tot - max(12.0, km_tot * 0.10):
+            continue
+        if any(abs(km_c - ks) < soglia_vicinanza for ks in km_soste_e_jolly):
+            continue
+        nodi_interni.append(
+            {
+                "tipo": "city",
+                "km": km_c,
+                "t": km_c / km_tot,
+                "nome": _tronca_testo_svg(c.get("nome", ""), 14),
+                "pct": _stima_pct_a_km(km_c),
+            }
+        )
+        n_citta_agg += 1
+
+    nodi_interni.sort(key=lambda n: (n["km"], 0 if n["tipo"] == "stop" else (1 if n["tipo"] == "jolly" else 2)))
+
+    # Distanziamento minimo visivo su t_vis per evitare sovrapposizione di icone ed etichette
+    n_int = len(nodi_interni)
+    if n_int > 0:
+        t_min_int = 0.18 if n_int <= 5 else 0.13
+        t_max_int = 0.89
+        gap_vis = min(0.115, (t_max_int - t_min_int) / max(1, n_int))
+        t_vals = [max(t_min_int, min(t_max_int, n["t"])) for n in nodi_interni]
+        for idx in range(1, n_int):
+            if t_vals[idx] - t_vals[idx - 1] < gap_vis:
+                t_vals[idx] = t_vals[idx - 1] + gap_vis
+        if t_vals[-1] > t_max_int:
+            eccesso = t_vals[-1] - t_max_int
+            t_vals = [max(t_min_int, v - eccesso) for v in t_vals]
+            for idx in range(n_int - 2, -1, -1):
+                if t_vals[idx + 1] - t_vals[idx] < gap_vis:
+                    t_vals[idx] = max(0.08, t_vals[idx + 1] - gap_vis)
+        for idx, n in enumerate(nodi_interni):
+            n["t_vis"] = max(0.08, min(0.91, t_vals[idx]))
+
+    # Costruisce il percorso SVG della strada sinuosa (60 segmenti fluidi)
+    punti_road = []
+    for step in range(61):
+        xr, yr = _xy_strada(step / 60.0)
+        punti_road.append(f"{xr:.1f},{yr:.1f}")
+    path_road = "M " + " L ".join(punti_road)
+
+    parti_svg = [
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" width="100%" '
+        'style="display:block; width:100%; height:auto; max-width:100%; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">',
+        # Sfondo scuro elegante + griglia discreta da navigatore
+        '<rect x="1" y="1" width="798" height="338" rx="16" fill="#0F172A" stroke="#1E293B" stroke-width="2"/>',
+        '<g stroke="#1E293B" stroke-width="1" opacity="0.45">',
+        '<line x1="0" y1="88" x2="800" y2="88"/>',
+        '<line x1="0" y1="168" x2="800" y2="168"/>',
+        '<line x1="0" y1="248" x2="800" y2="248"/>',
+        '<line x1="200" y1="36" x2="200" y2="294"/>',
+        '<line x1="400" y1="36" x2="400" y2="294"/>',
+        '<line x1="600" y1="36" x2="600" y2="294"/>',
+        '</g>',
+        # Intestazione tratta in alto
+        f'<text x="20" y="25" fill="#94A3B8" font-size="12" font-weight="700" letter-spacing="0.4">'
+        f'{html.escape(titolo_tratta)}</text>',
+        f'<text x="780" y="25" text-anchor="end" fill="#64748B" font-size="11.5" font-weight="600">'
+        f'{km_tot:.0f} km totali</text>',
+        # Strada sinuosa stilizzata (doppio bordo #334155 + asfalto #1E293B + linea centrale tratteggiata)
+        f'<path d="{path_road}" fill="none" stroke="#334155" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>',
+        f'<path d="{path_road}" fill="none" stroke="#1E293B" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>',
+        f'<path d="{path_road}" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="9 8" stroke-linecap="round" opacity="0.72"/>',
+    ]
+
+    # Registra i rettangoli occupati dalle etichette per posizionare macchinina + fumetto senza sovrapposizioni
+    box_occupati = []
+
+    # Disegna Partenza (t=0.0)
+    xs, ys = _xy_strada(0.0)
+    nome_orig_svg = html.escape(_tronca_testo_svg(orig_nome, 15))
+    box_occupati.append((12.0, ys + 38.0, 126.0, ys + 78.0))
+    parti_svg.append(
+        f'<line x1="{xs:.1f}" y1="{ys + 12:.1f}" x2="{xs:.1f}" y2="{ys + 38:.1f}" stroke="#10B981" stroke-width="1.4" stroke-dasharray="2 2"/>'
+        f'<circle cx="{xs:.1f}" cy="{ys:.1f}" r="15" fill="#10B981" opacity="0.22"/>'
+        f'<circle cx="{xs:.1f}" cy="{ys:.1f}" r="10.5" fill="#10B981" stroke="#ECFDF5" stroke-width="2"/>'
+        f'<circle cx="{xs:.1f}" cy="{ys:.1f}" r="4" fill="#0F172A"/>'
+        f'<rect x="12" y="{ys + 38:.1f}" width="114" height="40" rx="8" fill="#0B1220" fill-opacity="0.94" stroke="#10B981" stroke-width="1.2"/>'
+        f'<text x="69" y="{ys + 54:.1f}" text-anchor="middle" fill="#34D399" font-size="11" font-weight="800">{nome_orig_svg}</text>'
+        f'<text x="69" y="{ys + 70:.1f}" text-anchor="middle" fill="#E2E8F0" font-size="10.5" font-weight="600">Km 0 • {pct_partenza:.0f}%</text>'
+    )
+
+    # Disegna Arrivo (t=1.0)
+    xe, ye = _xy_strada(1.0)
+    nome_dest_svg = html.escape(_tronca_testo_svg(dest_nome, 15))
+    # Posiziona etichetta arrivo in basso se c'è spazio, altrimenti in alto
+    y_arr_box = ye + 38.0 if ye <= 185.0 else ye - 78.0
+    y_arr_l1 = ye + 12.0 if ye <= 185.0 else ye - 12.0
+    y_arr_l2 = y_arr_box if ye <= 185.0 else y_arr_box + 40.0
+    box_occupati.append((674.0, y_arr_box, 788.0, y_arr_box + 40.0))
+    parti_svg.append(
+        f'<line x1="{xe:.1f}" y1="{y_arr_l1:.1f}" x2="{xe:.1f}" y2="{y_arr_l2:.1f}" stroke="#EF4444" stroke-width="1.4" stroke-dasharray="2 2"/>'
+        f'<circle cx="{xe:.1f}" cy="{ye:.1f}" r="15" fill="#EF4444" opacity="0.22"/>'
+        f'<circle cx="{xe:.1f}" cy="{ye:.1f}" r="11" fill="#EF4444" stroke="#FEE2E2" stroke-width="2"/>'
+        f'<path d="M {xe - 3.5:.1f} {ye + 5:.1f} L {xe - 3.5:.1f} {ye - 5:.1f} L {xe + 5.5:.1f} {ye - 2.5:.1f} L {xe - 3.5:.1f} {ye + 0.5:.1f} Z" fill="#FFFFFF"/>'
+        f'<rect x="674" y="{y_arr_box:.1f}" width="114" height="40" rx="8" fill="#0B1220" fill-opacity="0.94" stroke="#EF4444" stroke-width="1.2"/>'
+        f'<text x="731" y="{y_arr_box + 16:.1f}" text-anchor="middle" fill="#FCA5A5" font-size="11" font-weight="800">{nome_dest_svg}</text>'
+        f'<text x="731" y="{y_arr_box + 32:.1f}" text-anchor="middle" fill="#E2E8F0" font-size="10.5" font-weight="600">Km {km_tot:.0f} • {pct_arrivo:.0f}%</text>'
+    )
+
+    # Disegna tutti i nodi interni alternando etichette sopra (-1) e sotto (+1) per zero sovrapposizioni
+    ultimo_lato_per_fascia = {"top": -999.0, "bot": -999.0}
+    for idx_n, nodo in enumerate(nodi_interni):
+        xn, yn = _xy_strada(nodo["t_vis"])
+        tipo = nodo["tipo"]
+
+        # Sceglie il lato con più spazio orizzontale rispetto all'etichetta precedente su quel lato
+        dist_top = xn - ultimo_lato_per_fascia["top"]
+        dist_bot = xn - ultimo_lato_per_fascia["bot"]
+        if tipo == "jolly":
+            # Il Jolly si alterna volentieri sul lato opposto rispetto alla sua sosta
+            lato = 1 if dist_bot >= dist_top else -1
+        elif dist_top >= dist_bot:
+            lato = -1
+        else:
+            lato = 1
+
+        if tipo == "stop":
+            box_w, box_h = 166.0, 50.0
+        elif tipo == "jolly":
+            box_w, box_h = 154.0, 38.0
+        else:
+            box_w, box_h = 104.0, 38.0
+
+        bx = max(12.0, min(788.0 - box_w, xn - box_w / 2.0))
+        if lato == -1:
+            by = max(36.0, yn - 26.0 - box_h)
+            if by + box_h > yn - 18.0:
+                by = max(36.0, yn - 18.0 - box_h)
+            ultimo_lato_per_fascia["top"] = bx + box_w
+            ly1, ly2 = yn - 12.0, by + box_h
+        else:
+            by = min(292.0 - box_h, yn + 26.0)
+            if by < yn + 18.0:
+                by = min(292.0 - box_h, yn + 18.0)
+            ultimo_lato_per_fascia["bot"] = bx + box_w
+            ly1, ly2 = yn + 12.0, by
+
+        box_occupati.append((bx, by, bx + box_w, by + box_h))
+        cx_lbl = bx + box_w / 2.0
+        nome_esc = html.escape(nodo["nome"])
+
+        if tipo == "stop":
+            parti_svg.append(
+                f'<line x1="{xn:.1f}" y1="{ly1:.1f}" x2="{cx_lbl:.1f}" y2="{ly2:.1f}" stroke="#10B981" stroke-width="1.5" stroke-dasharray="2 2"/>'
+                f'<circle cx="{xn:.1f}" cy="{yn:.1f}" r="17" fill="#10B981" opacity="0.22"/>'
+                f'<circle cx="{xn:.1f}" cy="{yn:.1f}" r="12.5" fill="#10B981" stroke="#ECFDF5" stroke-width="2"/>'
+                f'<text x="{xn:.1f}" y="{yn + 4.5:.1f}" text-anchor="middle" fill="#0F172A" font-size="13" font-weight="900">⚡</text>'
+                f'<rect x="{bx:.1f}" y="{by:.1f}" width="{box_w:.1f}" height="{box_h:.1f}" rx="8" fill="#0B1220" fill-opacity="0.95" stroke="#10B981" stroke-width="1.4"/>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 15:.1f}" text-anchor="middle" fill="#34D399" font-size="9.8" font-weight="800">{nome_esc}</text>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 29:.1f}" text-anchor="middle" fill="#F8FAFC" font-size="10" font-weight="700">Km {nodo["km"]:.0f} • ~{nodo["min_ric"]} min</text>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 43:.1f}" text-anchor="middle" fill="#94A3B8" font-size="10" font-weight="600">{nodo["arr_pct"]:.0f}% → {nodo["chg_pct"]:.0f}%</text>'
+            )
+        elif tipo == "jolly":
+            parti_svg.append(
+                f'<line x1="{xn:.1f}" y1="{ly1:.1f}" x2="{cx_lbl:.1f}" y2="{ly2:.1f}" stroke="#F59E0B" stroke-width="1.3" stroke-dasharray="2 2"/>'
+                f'<circle cx="{xn:.1f}" cy="{yn:.1f}" r="10" fill="#F59E0B" stroke="#FEF3C7" stroke-width="1.6"/>'
+                f'<text x="{xn:.1f}" y="{yn + 4:.1f}" text-anchor="middle" fill="#0F172A" font-size="11.5" font-weight="900">J</text>'
+                f'<rect x="{bx:.1f}" y="{by:.1f}" width="{box_w:.1f}" height="{box_h:.1f}" rx="7" fill="#0B1220" fill-opacity="0.93" stroke="#F59E0B" stroke-width="1.2"/>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 15:.1f}" text-anchor="middle" fill="#FBBF24" font-size="9.4" font-weight="800">{nome_esc}</text>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 30:.1f}" text-anchor="middle" fill="#FDE68A" font-size="9.8" font-weight="600">Jolly +{nodo["delta_km"]:.0f} km</text>'
+            )
+        else:
+            parti_svg.append(
+                f'<line x1="{xn:.1f}" y1="{ly1:.1f}" x2="{cx_lbl:.1f}" y2="{ly2:.1f}" stroke="#64748B" stroke-width="1.1" stroke-dasharray="2 2"/>'
+                f'<circle cx="{xn:.1f}" cy="{yn:.1f}" r="6.2" fill="#F8FAFC" stroke="#475569" stroke-width="2"/>'
+                f'<rect x="{bx:.1f}" y="{by:.1f}" width="{box_w:.1f}" height="{box_h:.1f}" rx="7" fill="#0B1220" fill-opacity="0.88" stroke="#334155" stroke-width="1"/>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 15:.1f}" text-anchor="middle" fill="#F1F5F9" font-size="10.2" font-weight="700">{nome_esc}</text>'
+                f'<text x="{cx_lbl:.1f}" y="{by + 30:.1f}" text-anchor="middle" fill="#94A3B8" font-size="9.8" font-weight="600">Km {nodo["km"]:.0f} • {nodo["pct"]:.0f}%</text>'
+            )
+
+    # Posizionamento anti-sovrapposizione della macchinina azzurra + fumetto verde batteria:
+    # se Sosta 1 cade nel primo 25% del tracciato, sposta la macchinina dopo Sosta 1 su un tratto libero
+    # verificando geometricamente che il fumetto non si sovrapponga mai a nessun riquadro testuale.
+    def _rettangoli_collidono(r1, r2, pad=5.0):
+        return not (
+            r1[2] + pad <= r2[0]
+            or r1[0] - pad >= r2[2]
+            or r1[3] + pad <= r2[1]
+            or r1[1] - pad >= r2[3]
+        )
+
+    def _punteggio_car(t_cand, fumetto_sopra=True):
+        x_c, y_c = _xy_strada(t_cand)
+        if fumetto_sopra:
+            rect_fum = (x_c - 24.0, y_c - 56.0, x_c + 24.0, y_c - 28.0)
+        else:
+            rect_fum = (x_c - 24.0, y_c + 18.0, x_c + 24.0, y_c + 46.0)
+        rect_auto = (x_c - 20.0, y_c - 18.0, x_c + 20.0, y_c + 10.0)
+        collisioni_fum = sum(1 for b in box_occupati if _rettangoli_collidono(rect_fum, b, pad=5.0))
+        collisioni_auto = sum(1 for b in box_occupati if _rettangoli_collidono(rect_auto, b, pad=3.0))
+        # Evita sovrapposizione con i cerchi dei nodi sulla carreggiata
+        min_dist_nodi = min(
+            [abs(t_cand - 0.0), abs(t_cand - 1.0)] + [abs(t_cand - n["t_vis"]) for n in nodi_interni]
+        )
+        penalita_nodi = 10 if min_dist_nodi < 0.055 else 0
+        fuori_margini = 10 if (rect_fum[1] < 32.0 or rect_fum[3] > 296.0) else 0
+        return (collisioni_fum * 100 + collisioni_auto * 20 + penalita_nodi + fuori_margini, -min_dist_nodi)
+
+    ancore_t = [0.0] + [n["t_vis"] for n in nodi_interni] + [1.0]
+    sosta1_early = any(n["tipo"] == "stop" and (n["t"] <= 0.25 or n["t_vis"] <= 0.28) for n in nodi_interni)
+
+    candidati_t = []
+    if sosta1_early:
+        # Cerca prima i tratti liberi subito dopo Sosta 1 (evitando il tratto iniziale compresso)
+        idx_s1 = next((idx for idx, n in enumerate(nodi_interni) if n["tipo"] == "stop"), 0)
+        for seg_i in range(idx_s1 + 1, len(ancore_t) - 1):
+            t_a, t_b = ancore_t[seg_i], ancore_t[seg_i + 1]
+            if t_b - t_a >= 0.07:
+                candidati_t.extend([(t_a + t_b) * 0.5, t_a + (t_b - t_a) * 0.38, t_a + (t_b - t_a) * 0.62])
+    else:
+        primo_t = nodi_interni[0]["t_vis"] if nodi_interni else 0.45
+        candidati_t.append(max(0.08, min(0.17, primo_t * 0.52)))
+        for seg_i in range(len(ancore_t) - 1):
+            t_a, t_b = ancore_t[seg_i], ancore_t[seg_i + 1]
+            if t_b - t_a >= 0.08:
+                candidati_t.append((t_a + t_b) * 0.5)
+
+    # Aggiunge sempre un campione uniforme lungo tutta la carreggiata come rete di sicurezza
+    for step_t in (0.35, 0.48, 0.60, 0.72, 0.25, 0.82):
+        candidati_t.append(step_t)
+
+    miglior_car = None
+    for fum_sopra in (True, False):
+        for tc in candidati_t:
+            score = _punteggio_car(tc, fumetto_sopra=fum_sopra)
+            # Preferisce leggermente fumetto sopra a parità di zero collisioni
+            chiave = (score[0], 0 if fum_sopra else 1, score[1])
+            if miglior_car is None or chiave < miglior_car[0]:
+                miglior_car = (chiave, tc, fum_sopra)
+        if miglior_car is not None and miglior_car[0][0] == 0:
+            break
+
+    t_car = miglior_car[1] if miglior_car is not None else 0.14
+    fumetto_car_sopra = miglior_car[2] if miglior_car is not None else True
+
+    # Calcola la % batteria reale stimata al km corrispondente alla posizione della macchinina
+    km_car = km_tot * t_car
+    pct_car = _stima_pct_a_km(km_car)
+    xc, yc = _xy_strada(t_car)
+    ang_car = _angolo_strada(t_car)
+
+    if fumetto_car_sopra:
+        fumetto_svg = (
+            f'<g transform="translate({xc:.1f},{yc - 44:.1f})">'
+            '<rect x="-22" y="-11" width="44" height="20" rx="10" fill="#10B981" stroke="#ECFDF5" stroke-width="1.2"/>'
+            '<polygon points="-4,9 4,9 0,14" fill="#10B981"/>'
+            f'<text x="0" y="3" text-anchor="middle" fill="#06281E" font-size="10.5" font-weight="900">{pct_car:.0f}%</text>'
+            '</g>'
+        )
+    else:
+        fumetto_svg = (
+            f'<g transform="translate({xc:.1f},{yc + 31:.1f})">'
+            '<rect x="-22" y="-10" width="44" height="20" rx="10" fill="#10B981" stroke="#ECFDF5" stroke-width="1.2"/>'
+            '<polygon points="-4,-10 4,-10 0,-15" fill="#10B981"/>'
+            f'<text x="0" y="4" text-anchor="middle" fill="#06281E" font-size="10.5" font-weight="900">{pct_car:.0f}%</text>'
+            '</g>'
+        )
+
+    # Disegna la macchinina azzurra stilizzata + fumetto verde batteria
+    parti_svg.append(
+        f'<g transform="translate({xc:.1f},{yc - 6:.1f}) rotate({ang_car:.1f})">'
+        '<ellipse cx="0" cy="11" rx="18" ry="4" fill="#020617" opacity="0.55"/>'
+        '<rect x="-17" y="-2" width="34" height="12" rx="6" fill="#38BDF8" stroke="#0284C7" stroke-width="1.4"/>'
+        '<path d="M -10 -2 C -8 -11, 7 -11, 11 -2 Z" fill="#38BDF8" stroke="#0284C7" stroke-width="1.3"/>'
+        '<path d="M -7 -2 C -5.5 -8.5, 5.5 -8.5, 8.5 -2 Z" fill="#E0F2FE"/>'
+        # Occhietti simpatici sul parabrezza
+        '<circle cx="1.2" cy="-5.0" r="1.9" fill="#FFFFFF"/>'
+        '<circle cx="5.2" cy="-5.0" r="1.9" fill="#FFFFFF"/>'
+        '<circle cx="1.7" cy="-5.0" r="0.95" fill="#0F172A"/>'
+        '<circle cx="5.7" cy="-5.0" r="0.95" fill="#0F172A"/>'
+        # Fanale anteriore luminoso e ruote scure con cerchione chiaro
+        '<circle cx="15.5" cy="3.0" r="1.7" fill="#FEF08A"/>'
+        '<circle cx="-9.5" cy="10.0" r="4.6" fill="#0F172A" stroke="#334155" stroke-width="1"/>'
+        '<circle cx="-9.5" cy="10.0" r="2.0" fill="#E2E8F0"/>'
+        '<circle cx="9.5" cy="10.0" r="4.6" fill="#0F172A" stroke="#334155" stroke-width="1"/>'
+        '<circle cx="9.5" cy="10.0" r="2.0" fill="#E2E8F0"/>'
+        '</g>'
+        f'{fumetto_svg}'
+    )
+
+    # Legenda compatta nella parte bassa dell'SVG
+    parti_svg.append(
+        '<line x1="18" y1="300" x2="782" y2="300" stroke="#1E293B" stroke-width="1.2"/>'
+        '<g font-size="11" font-weight="600" fill="#CBD5E1">'
+        '<circle cx="56" cy="320" r="5.5" fill="#10B981" stroke="#ECFDF5" stroke-width="1.2"/>'
+        '<text x="67" y="324">Partenza</text>'
+        '<circle cx="166" cy="320" r="5" fill="#F8FAFC" stroke="#475569" stroke-width="1.5"/>'
+        '<text x="177" y="324">Città di passaggio</text>'
+        '<circle cx="332" cy="320" r="7.5" fill="#10B981" stroke="#ECFDF5" stroke-width="1.2"/>'
+        '<text x="332" y="323.5" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="900">⚡</text>'
+        '<text x="345" y="324">Sosta Ricarica</text>'
+        '<circle cx="486" cy="320" r="7.5" fill="#F59E0B" stroke="#FEF3C7" stroke-width="1.2"/>'
+        '<text x="486" y="323.5" text-anchor="middle" fill="#0F172A" font-size="9" font-weight="900">J</text>'
+        '<text x="499" y="324">Piano B / Jolly</text>'
+        '<circle cx="642" cy="320" r="6" fill="#EF4444" stroke="#FEE2E2" stroke-width="1.2"/>'
+        '<text x="654" y="324">Arrivo</text>'
+        '</g>'
+        '</svg>'
+    )
+
+    return "".join(parti_svg)
+
+
+def render_roadbook_visivo(sol, res):
+    """Renderizza l'expander '🗺️ Mappa Visiva del Percorso' con SVG vettoriale per ogni tratta."""
+    if not sol or not sol.get("valido"):
+        return
+
+    andata_ritorno = bool(res.get("andata_ritorno"))
+    km1 = float(sol.get("km1", res.get("km1", 0.0)))
+    tot_km = float(sol.get("tot_km", res.get("tot_km", km1)))
+    km2 = max(0.0, tot_km - km1) if andata_ritorno else 0.0
+    km_per_pct = float(sol.get("km_per_pct", res.get("km_per_pct", 3.5)))
+    p_start = float(res.get("p_start", 80.0))
+    pct_arr_b = float(sol.get("pct_arrivo_b", 0.0))
+    pct_rientro_a = sol.get("pct_rientro_a")
+
+    soste_sol = sol.get("soste", [])
+    if andata_ritorno:
+        soste_andata = [s for s in soste_sol if not s.get("e_ritorno")]
+        soste_ritorno = [s for s in soste_sol if s.get("e_ritorno")]
+    else:
+        soste_andata = list(soste_sol)
+        soste_ritorno = []
+
+    with st.expander("🗺️ Mappa Visiva del Percorso", expanded=True):
+        svg_andata = genera_svg_roadbook_visivo(
+            titolo_tratta=f"➡️ ANDATA • {res['orig']} → {res['dest']}",
+            orig_nome=res["orig"],
+            dest_nome=res["dest"],
+            km_tratta=km1,
+            pct_partenza=p_start,
+            pct_arrivo=pct_arr_b,
+            soste_tratta=soste_andata,
+            nodi_citta=res.get("nodi_andata", []),
+            km_per_pct=km_per_pct,
+            km_offset=0.0,
+        )
+        st.markdown(
+            f'<div style="width:100%; overflow:hidden; border-radius:16px; margin:2px 0 8px 0;">{svg_andata}</div>',
+            unsafe_allow_html=True,
+        )
+
+        if andata_ritorno and km2 > 0.5:
+            svg_ritorno = genera_svg_roadbook_visivo(
+                titolo_tratta=f"⬅️ RITORNO • {res['dest']} → {res['orig']}",
+                orig_nome=res["dest"],
+                dest_nome=res["orig"],
+                km_tratta=km2,
+                pct_partenza=pct_arr_b,
+                pct_arrivo=float(pct_rientro_a if pct_rientro_a is not None else 0.0),
+                soste_tratta=soste_ritorno,
+                nodi_citta=res.get("nodi_ritorno", []),
+                km_per_pct=km_per_pct,
+                km_offset=km1,
+            )
+            st.markdown(
+                f'<div style="width:100%; overflow:hidden; border-radius:16px; margin:8px 0 2px 0;">{svg_ritorno}</div>',
+                unsafe_allow_html=True,
+            )
+
+
+def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scelta=None):
+    """Renderizza in fondo alla pagina il calcolatore richiudibile Elettrica vs Termica su base annua e 5 anni."""
+    st.markdown('<div style="margin-top: 1.2rem;"></div>', unsafe_allow_html=True)
+    with st.expander("💶 Calcolatore Risparmio Annuale: Elettrica vs Termica", expanded=False):
+        utente_low = str(current_user or "").strip().lower()
+        default_casa = 0.21 if utente_low in ("fabio", "elizabeth", "alessia") else 0.25
+        if "calc_ann_prezzo_casa" not in st.session_state:
+            st.session_state["calc_ann_prezzo_casa"] = float(
+                st.session_state.get("num_costo_casa", default_casa)
+            )
+
+        # Menu auto dedicato in cima al calcolatore, preselezionato sull'auto scelta nello Step 1
+        opz_auto_calc = opzioni_auto_per_utente(current_user)
+        auto_step1 = st.session_state.get("sel_auto")
+        if auto_step1 not in opz_auto_calc:
+            auto_step1 = opz_auto_calc[0] if opz_auto_calc else ""
+
+        if (
+            st.session_state.get("calc_ann_auto") not in opz_auto_calc
+            or st.session_state.get("calc_ann_sync_step1") != auto_step1
+        ):
+            st.session_state["calc_ann_auto"] = auto_step1
+            st.session_state["calc_ann_sync_step1"] = auto_step1
+
+        scelta_auto_calc = st.selectbox(
+            "🚗 Auto per il calcolo",
+            opz_auto_calc,
+            key="calc_ann_auto",
+        )
+
+        custom_cons_calc = float(st.session_state.get("num_cons", 18.0))
+        if "Altra Auto" in str(scelta_auto_calc):
+            custom_cons_calc = float(
+                st.number_input(
+                    "⚡ Consumo base autostradale estivo (kWh/100km)",
+                    min_value=10.0,
+                    max_value=35.0,
+                    value=custom_cons_calc,
+                    step=0.5,
+                    format="%.1f",
+                    key="calc_ann_custom_cons",
+                )
+            )
+
+        cfg_eff = (
+            costruisci_profilo_auto(
+                scelta_auto_calc,
+                float(st.session_state.get("num_bat", 60.0)),
+                custom_cons_calc,
+                float(st.session_state.get("num_dc", 120.0)),
+            )
+            if scelta_auto_calc
+            else (auto_cfg if isinstance(auto_cfg, dict) and auto_cfg.get("cons_base") else None)
+        )
+
+        guida_eff = guida_scelta or st.session_state.get("sel_guida") or "🚗 Guida Regolare"
+        stile_dict = STILI_GUIDA.get(guida_eff, {"autostrada": 1.0, "statale": 1.0})
+
+        # Consumi medi annui stimati (media ponderata delle 4 stagioni = +7% sulla base estiva)
+        # Fallback sicuro: 21.0 kWh/100km autostrada e 16.0 kWh/100km extraurbano se nessun profilo auto è disponibile
+        if isinstance(cfg_eff, dict) and cfg_eff.get("cons_base"):
+            nome_auto_calc = str(cfg_eff.get("nome") or "Auto Elettrica")
+            cons_base_val = float(cfg_eff["cons_base"])
+            cons_auto_annuo = round(cons_base_val * 1.07 * stile_dict["autostrada"], 1)
+            cons_extra_annuo = round(
+                cons_base_val * FATTORE_CONSUMO_EXTRAURBANO * 1.07 * stile_dict["statale"],
+                1,
+            )
+        else:
+            nome_auto_calc = "Auto Elettrica"
+            cons_auto_annuo = 21.0
+            cons_extra_annuo = 16.0
+
+        st.caption(
+            f"Calcolo basato sui consumi medi annui della tua auto ({nome_auto_calc}): "
+            f"{cons_extra_annuo:.1f} kWh/100km fuori autostrada • {cons_auto_annuo:.1f} kWh/100km in autostrada."
+        )
+
+        r1_c1, r1_c2 = st.columns(2)
+        km_anno = int(
+            r1_c1.number_input(
+                "🛣️ Km percorsi all'anno",
+                min_value=1000,
+                max_value=100000,
+                value=15000,
+                step=1000,
+                key="calc_ann_km",
+            )
+        )
+        quota_auto_pct = int(
+            r1_c2.slider(
+                "🛣️ Quota autostrada (%)",
+                min_value=0,
+                max_value=100,
+                value=30,
+                step=5,
+                key="calc_ann_auto_pct",
+            )
+        )
+
+        r2_c1, r2_c2 = st.columns([2, 1])
+        quota_casa_pct = int(
+            r2_c1.slider(
+                "🏠 Ricariche a Casa (%)",
+                min_value=0,
+                max_value=100,
+                value=90,
+                step=5,
+                key="calc_ann_casa_pct",
+            )
+        )
+        quota_pub_pct = 100 - quota_casa_pct
+        r2_c2.markdown(
+            f'<div style="margin-top:26px; padding:8px 10px; border-radius:10px; background:#161A23; '
+            f'border:1px solid #2A2E39; text-align:center; font-size:0.86rem; font-weight:700; color:#E2E8F0;">'
+            f'🏠 {quota_casa_pct}% Casa / ⚡ {quota_pub_pct}% Pubbliche'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        r3_c1, r3_c2 = st.columns(2)
+        prezzo_casa = float(
+            r3_c1.number_input(
+                "🏠 Prezzo Casa (€/kWh)",
+                min_value=0.05,
+                max_value=1.00,
+                step=0.01,
+                format="%.2f",
+                key="calc_ann_prezzo_casa",
+            )
+        )
+        prezzo_pub = float(
+            r3_c2.number_input(
+                "⚡ Prezzo medio Ricarica Pubblica (€/kWh)",
+                min_value=0.10,
+                max_value=1.50,
+                value=0.65,
+                step=0.05,
+                format="%.2f",
+                help="Modifica se usi abbonamenti, es. 0.45 - 0.55 €/kWh",
+                key="calc_ann_prezzo_pub",
+            )
+        )
+        r3_c2.caption("Modifica se usi abbonamenti, es. 0.45 - 0.55 €/kWh")
+
+        r4_c1, r4_c2 = st.columns(2)
+        prezzo_carb = float(
+            r4_c1.number_input(
+                "⛽ Prezzo carburante (€/L)",
+                min_value=0.80,
+                max_value=3.50,
+                value=2.05,
+                step=0.05,
+                format="%.2f",
+                help="Media benzina/diesel 2026, modificabile",
+                key="calc_ann_carb",
+            )
+        )
+        consumo_kml = float(
+            r4_c2.number_input(
+                "⛽ Consumo medio termica (km/L)",
+                min_value=5.0,
+                max_value=35.0,
+                value=16.0,
+                step=0.5,
+                format="%.1f",
+                key="calc_ann_kml",
+            )
+        )
+
+        # Calcolo energetico ed economico annuale
+        km_auto = km_anno * (quota_auto_pct / 100.0)
+        km_extra = km_anno - km_auto
+        kwh_annui = (km_auto / 100.0) * cons_auto_annuo + (km_extra / 100.0) * cons_extra_annuo
+        prezzo_medio_ev = (quota_casa_pct / 100.0) * prezzo_casa + (quota_pub_pct / 100.0) * prezzo_pub
+        spesa_ev_anno = kwh_annui * prezzo_medio_ev
+
+        litri_annui = km_anno / max(1.0, consumo_kml)
+        spesa_termica_anno = litri_annui * prezzo_carb
+
+        risparmio_anno = spesa_termica_anno - spesa_ev_anno
+        risparmio_5anni = risparmio_anno * 5.0
+        col_risp = "#34D399" if risparmio_anno >= 0 else "#F87171"
+        segno_risp = "+" if risparmio_anno >= 0 else "-"
+        euro_100_ev = (spesa_ev_anno / km_anno) * 100.0 if km_anno > 0 else 0.0
+        euro_100_term = (spesa_termica_anno / km_anno) * 100.0 if km_anno > 0 else 0.0
+
+        def _fmt_int_it(val):
+            return f"{int(round(val)):,}".replace(",", ".")
+
+        st.markdown(
+            f'<div class="ev-kpi-grid" style="margin-top:10px;">'
+            f'<div class="ev-kpi" style="border-top:3px solid #3B82F6;">'
+            f'<div class="ev-kpi-label">⚡ Spesa Elettrica / anno</div>'
+            f'<div class="ev-kpi-val" style="color:#60A5FA;">{_fmt_int_it(spesa_ev_anno)} €</div>'
+            f'<div class="ev-kpi-sub">{_fmt_int_it(kwh_annui)} kWh • ~{euro_100_ev:.2f} €/100km</div>'
+            f'</div>'
+            f'<div class="ev-kpi" style="border-top:3px solid #F59E0B;">'
+            f'<div class="ev-kpi-label">⛽ Spesa Termica / anno</div>'
+            f'<div class="ev-kpi-val" style="color:#FBBF24;">{_fmt_int_it(spesa_termica_anno)} €</div>'
+            f'<div class="ev-kpi-sub">{_fmt_int_it(litri_annui)} L • ~{euro_100_term:.2f} €/100km</div>'
+            f'</div>'
+            f'<div class="ev-kpi" style="border-top:3px solid {col_risp};">'
+            f'<div class="ev-kpi-label">💰 Risparmio stimato</div>'
+            f'<div class="ev-kpi-val" style="color:{col_risp};">{segno_risp}{_fmt_int_it(abs(risparmio_anno))} € / anno</div>'
+            f'<div class="ev-kpi-sub" style="color:#E2E8F0; font-weight:700;">In 5 anni: {segno_risp}{_fmt_int_it(abs(risparmio_5anni))} €</div>'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
 def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
     """Renderizza riepilogo tempi, selettore alternative + card di ogni sosta e card finale di arrivo."""
     if not sol or not sol.get("valido"):
@@ -4754,14 +5735,18 @@ with tab_viaggio:
 
                         if strada_codice == "confronta":
                             # Calcola entrambi i percorsi: standard (Autostrada) e alternativa Statali/Extraurbano
-                            res_auto = costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=False)
-                            res_no = costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=True)
+                            res_auto = costruisci_percorso_completo(
+                                db, p1, p2, andata_ritorno, evita_autostrade=False, orig_nome=orig, dest_nome=dest
+                            )
+                            res_no = costruisci_percorso_completo(
+                                db, p1, p2, andata_ritorno, evita_autostrade=True, orig_nome=orig, dest_nome=dest
+                            )
                             if not res_auto or not res_no:
                                 st.error("Impossibile calcolare uno dei due percorsi tramite OSRM.")
                                 st.stop()
 
-                            all_ch_a, km1_a, tot_km_a, tot_dur_a, dur1_a, dur2_a = res_auto
-                            all_ch_b, km1_b, tot_km_b, tot_dur_b, dur1_b, dur2_b = res_no
+                            all_ch_a, km1_a, tot_km_a, tot_dur_a, dur1_a, dur2_a, nodi_andata_a, nodi_ritorno_a = res_auto
+                            all_ch_b, km1_b, tot_km_b, tot_dur_b, dur1_b, dur2_b, _nodi_ab, _nodi_rb = res_no
 
                             sol_a, _, _ = genera_soluzioni_confronto(
                                 all_ch=all_ch_a,
@@ -4822,17 +5807,20 @@ with tab_viaggio:
                             km1, tot_km, tot_dur, dur1, dur2 = km1_a, tot_km_a, tot_dur_a, dur1_a, dur2_a
                             cons_eff_viaggio, km_per_pct_viaggio, kwh_totali = cons_eff, km_per_pct, kwh_a
                             all_ch = all_ch_a
+                            nodi_andata, nodi_ritorno = nodi_andata_a, nodi_ritorno_a
                             desc_a = "🛣️ Con Autostrada"
                             desc_b = "🚗 Senza Autostrada — Statali / Extraurbano"
 
                         else:
                             evita_auto = strada_codice == "no_auto"
-                            res_rt = costruisci_percorso_completo(db, p1, p2, andata_ritorno, evita_autostrade=evita_auto)
+                            res_rt = costruisci_percorso_completo(
+                                db, p1, p2, andata_ritorno, evita_autostrade=evita_auto, orig_nome=orig, dest_nome=dest
+                            )
                             if not res_rt:
                                 st.error("Impossibile calcolare il percorso stradale tramite OSRM.")
                                 st.stop()
 
-                            all_ch, km1, tot_km, tot_dur, dur1, dur2 = res_rt
+                            all_ch, km1, tot_km, tot_dur, dur1, dur2, nodi_andata, nodi_ritorno = res_rt
                             cons_eff_viaggio = cons_extra if evita_auto else cons_eff
                             km_per_pct_viaggio = km_per_pct_extra if evita_auto else km_per_pct
                             kwh_totali = round((tot_km / 100.0) * cons_eff_viaggio, 1)
@@ -4906,6 +5894,8 @@ with tab_viaggio:
                             "desc_a": desc_a,
                             "desc_b": desc_b,
                             "all_ch": all_ch,
+                            "nodi_andata": nodi_andata,
+                            "nodi_ritorno": nodi_ritorno,
                         }
 
                         # Precarica i risultati di arrivo (B) anche nel Tab 2 per consultazione immediata
@@ -4989,6 +5979,9 @@ with tab_viaggio:
         # Riquadro dedicato di confronto diretto Autostrada vs Statali / Extraurbano sull'intero viaggio
         if res.get("strada_codice") == "confronta" and sol_a_dyn and sol_b_dyn:
             render_card_confronto_strade(sol_a_dyn, sol_b_dyn, res)
+
+        # Roadbook Visivo in SVG vettoriale subito sopra le card delle soste
+        render_roadbook_visivo(sol_a_dyn, res)
 
         # Scheda espandibile SOLUZIONE A (aperta di default)
         tempo_a_txt = formatta_durata(sol_a_dyn["tempo_totale_min"]) if sol_a_dyn and sol_a_dyn.get("valido") else "N.D."
@@ -5261,9 +6254,12 @@ with tab_zona:
                 unsafe_allow_html=True,
             )
 
+# Calcolatore compatto di risparmio annuale Elettrica vs Termica in fondo alla pagina
+render_calcolatore_risparmio_annuale(current_user)
+
 # Pulsante discreto di disconnessione in fondo alla pagina
 st.markdown(
-    '<div style="margin-top: 2rem; border-top: 1px solid #2A2E39; padding-top: 0.9rem;"></div>',
+    '<div style="margin-top: 1.4rem; border-top: 1px solid #2A2E39; padding-top: 0.9rem;"></div>',
     unsafe_allow_html=True,
 )
 _col_out_l, _col_out_r = st.columns([3, 1])
@@ -5288,6 +6284,9 @@ with _col_out_r:
             "sel_auto",
             "last_auto_sel",
             "num_costo_casa",
+            "calc_ann_prezzo_casa",
+            "calc_ann_auto",
+            "calc_ann_sync_step1",
         ):
             st.session_state.pop(chiave, None)
         for chiave in list(st.session_state.keys()):
