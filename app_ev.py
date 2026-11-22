@@ -4432,8 +4432,10 @@ def genera_svg_roadbook_visivo(
     path_road = "M " + " L ".join(punti_road)
 
     parti_svg = [
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" width="100%" '
-        'style="display:block; width:100%; height:auto; max-width:100%; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">',
+        '<svg id="ev-roadbook-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" '
+        'preserveAspectRatio="xMidYMid meet" width="100%" height="100%" '
+        'style="display:block; width:100%; height:100%; user-select:none; -webkit-user-select:none; '
+        'font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;">',
         # Sfondo scuro elegante + griglia discreta da navigatore
         '<rect x="1" y="1" width="798" height="338" rx="16" fill="#0F172A" stroke="#1E293B" stroke-width="2"/>',
         '<g stroke="#1E293B" stroke-width="1" opacity="0.45">',
@@ -4444,11 +4446,9 @@ def genera_svg_roadbook_visivo(
         '<line x1="400" y1="36" x2="400" y2="294"/>',
         '<line x1="600" y1="36" x2="600" y2="294"/>',
         '</g>',
-        # Intestazione tratta in alto
+        # Intestazione tratta in alto a sinistra (lascia libero l'angolo destro per i comandi zoom)
         f'<text x="20" y="25" fill="#94A3B8" font-size="12" font-weight="700" letter-spacing="0.4">'
-        f'{html.escape(titolo_tratta)}</text>',
-        f'<text x="780" y="25" text-anchor="end" fill="#64748B" font-size="11.5" font-weight="600">'
-        f'{km_tot:.0f} km totali</text>',
+        f'{html.escape(titolo_tratta)} • {km_tot:.0f} km</text>',
         # Strada sinuosa stilizzata (doppio bordo #334155 + asfalto #1E293B + linea centrale tratteggiata)
         f'<path d="{path_road}" fill="none" stroke="#334155" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>',
         f'<path d="{path_road}" fill="none" stroke="#1E293B" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>',
@@ -4694,8 +4694,337 @@ def genera_svg_roadbook_visivo(
     return "".join(parti_svg)
 
 
+def render_svg_mappa_interattiva(svg_markup, height=360):
+    """
+    Renderizza un SVG della Mappa Visiva tramite components.html in un contenitore interattivo
+    autocontenuto (senza librerie esterne) con:
+      - pinch-to-zoom a 2 dita centrato sul punto medio (1.0x -> 4.0x) via viewBox nativo nitido;
+      - pan fluido con 1 dito o mouse drag quando zoomato (> 1.0x);
+      - zoom con rotella del mouse centrato sul cursore;
+      - doppio tap / doppio clic per ripristinare istantaneamente 1.0x;
+      - 3 pulsanti discreti semi-trasparenti (+, −, ↺) nell'angolo in alto a destra.
+    """
+    html_interattivo = f"""<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<style>
+  html, body {{
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+  }}
+  .ev-zoom-box {{
+    position: relative;
+    width: 100%;
+    height: {int(height) - 4}px;
+    background: #0F172A;
+    border: 1px solid #1E293B;
+    border-radius: 16px;
+    overflow: hidden;
+    touch-action: none;
+    cursor: grab;
+    box-sizing: border-box;
+  }}
+  .ev-zoom-box.is-panning {{
+    cursor: grabbing;
+  }}
+  .ev-zoom-controls {{
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 20;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }}
+  .ev-zbtn {{
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    background: rgba(15, 23, 42, 0.74);
+    color: #F1F5F9;
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    transition: background 0.15s ease, border-color 0.15s ease;
+    touch-action: manipulation;
+  }}
+  .ev-zbtn:hover {{
+    background: rgba(30, 41, 59, 0.92);
+    border-color: rgba(56, 189, 248, 0.65);
+  }}
+  .ev-zbtn:active {{
+    transform: scale(0.94);
+  }}
+</style>
+</head>
+<body>
+<div class="ev-zoom-box" id="evZoomBox">
+  <div class="ev-zoom-controls">
+    <button type="button" class="ev-zbtn" id="btnZoomIn" title="Zoom avanti">+</button>
+    <button type="button" class="ev-zbtn" id="btnZoomOut" title="Zoom indietro">&minus;</button>
+    <button type="button" class="ev-zbtn" id="btnZoomReset" title="Ripristina vista 1x">&#8634;</button>
+  </div>
+  {svg_markup}
+</div>
+<script>
+(function() {{
+  var box = document.getElementById("evZoomBox");
+  var svg = box ? box.querySelector("svg") : null;
+  if (!box || !svg) return;
+
+  var BASE_W = 800.0;
+  var BASE_H = 340.0;
+  var MIN_SCALE = 1.0;
+  var MAX_SCALE = 4.0;
+
+  var scale = 1.0;
+  var vx = 0.0;
+  var vy = 0.0;
+
+  function clamp(v, mn, mx) {{
+    return Math.max(mn, Math.min(mx, v));
+  }}
+
+  function getRenderMetrics() {{
+    var rect = svg.getBoundingClientRect();
+    var boxRatio = rect.width / Math.max(1, rect.height);
+    var svgRatio = BASE_W / BASE_H;
+    var renW, renH, offX, offY;
+    if (boxRatio > svgRatio) {{
+      renH = rect.height;
+      renW = renH * svgRatio;
+      offX = (rect.width - renW) / 2.0;
+      offY = 0.0;
+    }} else {{
+      renW = rect.width;
+      renH = renW / svgRatio;
+      offX = 0.0;
+      offY = (rect.height - renH) / 2.0;
+    }}
+    return {{ rect: rect, renW: Math.max(1, renW), renH: Math.max(1, renH), offX: offX, offY: offY }};
+  }}
+
+  function applyViewBox() {{
+    var vw = BASE_W / scale;
+    var vh = BASE_H / scale;
+    vx = clamp(vx, 0.0, BASE_W - vw);
+    vy = clamp(vy, 0.0, BASE_H - vh);
+    svg.setAttribute("viewBox", vx.toFixed(2) + " " + vy.toFixed(2) + " " + vw.toFixed(2) + " " + vh.toFixed(2));
+  }}
+
+  function zoomAtClient(newScale, clientX, clientY) {{
+    newScale = clamp(newScale, MIN_SCALE, MAX_SCALE);
+    var m = getRenderMetrics();
+    var fx = clamp((clientX - m.rect.left - m.offX) / m.renW, 0.0, 1.0);
+    var fy = clamp((clientY - m.rect.top - m.offY) / m.renH, 0.0, 1.0);
+
+    var oldVw = BASE_W / scale;
+    var oldVh = BASE_H / scale;
+    var wx = vx + fx * oldVw;
+    var wy = vy + fy * oldVh;
+
+    scale = newScale;
+    var newVw = BASE_W / scale;
+    var newVh = BASE_H / scale;
+    vx = wx - fx * newVw;
+    vy = wy - fy * newVh;
+    applyViewBox();
+  }}
+
+  function zoomAtCenter(factor) {{
+    var rect = svg.getBoundingClientRect();
+    zoomAtClient(scale * factor, rect.left + rect.width / 2.0, rect.top + rect.height / 2.0);
+  }}
+
+  function resetView() {{
+    scale = 1.0;
+    vx = 0.0;
+    vy = 0.0;
+    applyViewBox();
+  }}
+
+  // Pulsanti rapidi (+, -, reset)
+  document.getElementById("btnZoomIn").addEventListener("click", function(e) {{
+    e.stopPropagation();
+    zoomAtCenter(1.35);
+  }});
+  document.getElementById("btnZoomOut").addEventListener("click", function(e) {{
+    e.stopPropagation();
+    zoomAtCenter(1.0 / 1.35);
+  }});
+  document.getElementById("btnZoomReset").addEventListener("click", function(e) {{
+    e.stopPropagation();
+    resetView();
+  }});
+
+  // Doppio clic mouse per reset immediato
+  box.addEventListener("dblclick", function(e) {{
+    if (e.target && e.target.closest(".ev-zoom-controls")) return;
+    e.preventDefault();
+    resetView();
+  }});
+
+  // Zoom con rotella mouse centrato sul cursore
+  box.addEventListener("wheel", function(e) {{
+    e.preventDefault();
+    var factor = e.deltaY < 0 ? 1.18 : (1.0 / 1.18);
+    zoomAtClient(scale * factor, e.clientX, e.clientY);
+  }}, {{ passive: false }});
+
+  // Trascinamento mouse (pan quando zoom > 1.0x)
+  var mouseDown = false;
+  var lastMX = 0, lastMY = 0;
+  box.addEventListener("mousedown", function(e) {{
+    if (e.target && e.target.closest(".ev-zoom-controls")) return;
+    if (scale <= 1.001) return;
+    mouseDown = true;
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    box.classList.add("is-panning");
+  }});
+  window.addEventListener("mousemove", function(e) {{
+    if (!mouseDown) return;
+    var m = getRenderMetrics();
+    var vw = BASE_W / scale;
+    var vh = BASE_H / scale;
+    vx -= (e.clientX - lastMX) * (vw / m.renW);
+    vy -= (e.clientY - lastMY) * (vh / m.renH);
+    lastMX = e.clientX;
+    lastMY = e.clientY;
+    applyViewBox();
+  }});
+  window.addEventListener("mouseup", function() {{
+    if (mouseDown) {{
+      mouseDown = false;
+      box.classList.remove("is-panning");
+    }}
+  }});
+
+  // Eventi touch: pinch-to-zoom a 2 dita + pan fluido a 1 dito + doppio tap reset
+  var pinchActive = false;
+  var pinchStartDist = 0;
+  var pinchStartScale = 1.0;
+  var pinchLastMidX = 0, pinchLastMidY = 0;
+  var panActive = false;
+  var touchMoved = false;
+  var lastTX = 0, lastTY = 0;
+  var lastTapTime = 0;
+
+  function touchDist(t1, t2) {{
+    var dx = t2.clientX - t1.clientX;
+    var dy = t2.clientY - t1.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }}
+
+  box.addEventListener("touchstart", function(e) {{
+    if (e.target && e.target.closest(".ev-zoom-controls")) return;
+    if (e.touches.length === 2) {{
+      e.preventDefault();
+      pinchActive = true;
+      panActive = false;
+      touchMoved = true;
+      pinchStartDist = Math.max(10, touchDist(e.touches[0], e.touches[1]));
+      pinchStartScale = scale;
+      pinchLastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2.0;
+      pinchLastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2.0;
+    }} else if (e.touches.length === 1) {{
+      pinchActive = false;
+      panActive = scale > 1.001;
+      touchMoved = false;
+      lastTX = e.touches[0].clientX;
+      lastTY = e.touches[0].clientY;
+    }}
+  }}, {{ passive: false }});
+
+  box.addEventListener("touchmove", function(e) {{
+    if (e.target && e.target.closest(".ev-zoom-controls")) return;
+    if (pinchActive && e.touches.length === 2) {{
+      e.preventDefault();
+      var dist = Math.max(10, touchDist(e.touches[0], e.touches[1]));
+      var midX = (e.touches[0].clientX + e.touches[1].clientX) / 2.0;
+      var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2.0;
+
+      // Pan del punto medio + zoom centrato sul punto medio tra le due dita
+      var m = getRenderMetrics();
+      var vw = BASE_W / scale;
+      var vh = BASE_H / scale;
+      vx -= (midX - pinchLastMidX) * (vw / m.renW);
+      vy -= (midY - pinchLastMidY) * (vh / m.renH);
+      applyViewBox();
+
+      var targetScale = pinchStartScale * (dist / pinchStartDist);
+      zoomAtClient(targetScale, midX, midY);
+
+      pinchLastMidX = midX;
+      pinchLastMidY = midY;
+    }} else if (panActive && e.touches.length === 1) {{
+      e.preventDefault();
+      var tx = e.touches[0].clientX;
+      var ty = e.touches[0].clientY;
+      if (Math.abs(tx - lastTX) > 2 || Math.abs(ty - lastTY) > 2) {{
+        touchMoved = true;
+      }}
+      var m1 = getRenderMetrics();
+      var vw1 = BASE_W / scale;
+      var vh1 = BASE_H / scale;
+      vx -= (tx - lastTX) * (vw1 / m1.renW);
+      vy -= (ty - lastTY) * (vh1 / m1.renH);
+      lastTX = tx;
+      lastTY = ty;
+      applyViewBox();
+    }}
+  }}, {{ passive: false }});
+
+  box.addEventListener("touchend", function(e) {{
+    if (e.target && e.target.closest(".ev-zoom-controls")) return;
+    if (e.touches.length < 2) {{
+      pinchActive = false;
+    }}
+    if (e.touches.length === 1 && scale > 1.001) {{
+      panActive = true;
+      lastTX = e.touches[0].clientX;
+      lastTY = e.touches[0].clientY;
+      return;
+    }}
+    if (e.touches.length === 0) {{
+      panActive = false;
+      if (!touchMoved) {{
+        var now = Date.now();
+        if (now - lastTapTime > 0 && now - lastTapTime < 310) {{
+          e.preventDefault();
+          resetView();
+          lastTapTime = 0;
+        }} else {{
+          lastTapTime = now;
+        }}
+      }}
+    }}
+  }}, {{ passive: false }});
+
+  applyViewBox();
+}})();
+</script>
+</body>
+</html>"""
+    components.html(html_interattivo, height=int(height), scrolling=False)
+
+
 def render_roadbook_visivo(sol, res):
-    """Renderizza l'expander '🗺️ Mappa Visiva del Percorso' con SVG vettoriale per ogni tratta."""
+    """Renderizza l'expander '🗺️ Mappa Visiva del Percorso' con SVG vettoriale zoomabile per ogni tratta."""
     if not sol or not sol.get("valido"):
         return
 
@@ -4729,10 +5058,7 @@ def render_roadbook_visivo(sol, res):
             km_per_pct=km_per_pct,
             km_offset=0.0,
         )
-        st.markdown(
-            f'<div style="width:100%; overflow:hidden; border-radius:16px; margin:2px 0 8px 0;">{svg_andata}</div>',
-            unsafe_allow_html=True,
-        )
+        render_svg_mappa_interattiva(svg_andata, height=360)
 
         if andata_ritorno and km2 > 0.5:
             svg_ritorno = genera_svg_roadbook_visivo(
@@ -4747,10 +5073,7 @@ def render_roadbook_visivo(sol, res):
                 km_per_pct=km_per_pct,
                 km_offset=km1,
             )
-            st.markdown(
-                f'<div style="width:100%; overflow:hidden; border-radius:16px; margin:8px 0 2px 0;">{svg_ritorno}</div>',
-                unsafe_allow_html=True,
-            )
+            render_svg_mappa_interattiva(svg_ritorno, height=360)
 
 
 def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scelta=None):
