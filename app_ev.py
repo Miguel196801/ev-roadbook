@@ -290,6 +290,8 @@ PREFERENZE_STRADE = {
 
 FATTORE_CONSUMO_EXTRAURBANO = 0.84  # Riduzione consumo -16% su statali/extraurbano rispetto all'autostrada
 COSTO_PEDAGGIO_KM = 0.078  # Stima media pedaggio autostradale italiano (€/km)
+TARIFFA_TESLA_SUC_KWH = 0.47  # Tariffa media di riferimento Tesla Supercharger (€/kWh)
+TARIFFA_ALTRI_OP_KWH = 0.69  # Tariffa media di riferimento altri operatori veloci (€/kWh)
 TETTO_RICARICA_INTERMEDIA = 80  # Soglia base ricarica veloce (prima del rallentamento 80%-100%)
 TETTO_SOSTA_UNICA_OTTIMALE = 90  # Massimo assoluto per sosta unica quando conviene sul tempo totale
 MINUTI_FISSI_SOSTA_EXTRA = 7  # Minuti fissi di manovra/ingresso/uscita per una seconda sosta
@@ -3247,9 +3249,68 @@ def calcola_cronologia_e_costi(sol, res):
     )
     kwh_casa = max(0.0, round(kwh_viaggio - kwh_colonnine, 1))
     prezzo_casa = float(res.get("costo_casa_kwh", 0.25))
-    prezzo_col = float(res.get("costo_col_kwh", 0.69))
+    prezzo_col = float(res.get("costo_col_kwh", TARIFFA_ALTRI_OP_KWH))
     costo_casa = round(kwh_casa * prezzo_casa, 2)
-    costo_col = round(kwh_colonnine * prezzo_col, 2)
+
+    # Per chi guida una Tesla senza tariffa colonnine personalizzata manualmente, distingue automaticamente
+    # tra Tesla Supercharger (0.47 €/kWh) e altri operatori veloci (0.69 €/kWh) pesando sui kWh reali.
+    auto_e_tesla = bool(res.get("auto_cfg", {}).get("is_tesla_car")) or (
+        "tesla" in str(res.get("auto_nome", "")).lower()
+    )
+    tariffa_manuale = bool(res.get("costo_col_personalizzato", False))
+    nota_tariffa_col = ""
+    tariffa_media_col = prezzo_col
+
+    if auto_e_tesla and (not tariffa_manuale) and soste_arricchite and kwh_colonnine > 0.0:
+        kwh_suc = 0.0
+        kwh_altri = 0.0
+        costo_col_esatto = 0.0
+        operatori_altri = []
+
+        for s in soste_arricchite:
+            kwh_s = max(0.0, (float(s["charge_to"]) - float(s["arr_pct"])) / 100.0 * bat_kwh)
+            nome_s_low = str(s.get("Stazione", "")).lower()
+            e_suc = bool(s.get("is_tesla")) or ("tesla" in nome_s_low) or ("supercharger" in nome_s_low)
+            if e_suc:
+                kwh_suc += kwh_s
+                costo_col_esatto += kwh_s * TARIFFA_TESLA_SUC_KWH
+            else:
+                kwh_altri += kwh_s
+                costo_col_esatto += kwh_s * TARIFFA_ALTRI_OP_KWH
+                op_breve = "altri operatori"
+                for _op_k, (op_lbl, op_kws) in OPERATORI_KEYWORDS.items():
+                    if any(kw in nome_s_low for kw in op_kws):
+                        op_breve = op_lbl
+                        break
+                if op_breve == "altri operatori":
+                    if "electra" in nome_s_low:
+                        op_breve = "Electra"
+                    elif "alperia" in nome_s_low:
+                        op_breve = "Alperia"
+                    elif "a2a" in nome_s_low:
+                        op_breve = "A2A"
+                if op_breve not in operatori_altri:
+                    operatori_altri.append(op_breve)
+
+        kwh_tot_soste = kwh_suc + kwh_altri
+        costo_col = round(costo_col_esatto, 2)
+        tariffa_media_col = (costo_col_esatto / kwh_tot_soste) if kwh_tot_soste > 0.0 else prezzo_col
+        t_med_txt = f"{tariffa_media_col:.2f}".replace(".", ",")
+        t_suc_txt = f"{TARIFFA_TESLA_SUC_KWH:.2f}".replace(".", ",")
+        t_alt_txt = f"{TARIFFA_ALTRI_OP_KWH:.2f}".replace(".", ",")
+        op_altri_txt = " / ".join(operatori_altri[:2]) if operatori_altri else "altri operatori"
+
+        if kwh_suc > 0.0 and kwh_altri > 0.0:
+            nota_tariffa_col = (
+                f"Tariffa media {t_med_txt} €/kWh "
+                f"(mix Supercharger {t_suc_txt} € + {op_altri_txt} {t_alt_txt} €)"
+            )
+        elif kwh_suc > 0.0:
+            nota_tariffa_col = f"Tariffa Supercharger Tesla {t_suc_txt} €/kWh"
+        elif kwh_altri > 0.0:
+            nota_tariffa_col = f"Tariffa {op_altri_txt} {t_alt_txt} €/kWh (soste fuori rete Supercharger)"
+    else:
+        costo_col = round(kwh_colonnine * prezzo_col, 2)
 
     tipo_strada_txt = str(sol.get("tipo_strada", ""))
     senza_autostrada = ("Senza Autostrada" in tipo_strada_txt) or (res.get("strada_codice") == "no_auto")
@@ -3270,6 +3331,8 @@ def calcola_cronologia_e_costi(sol, res):
         "kwh_colonnine": kwh_colonnine,
         "costo_casa": costo_casa,
         "costo_colonnine": costo_col,
+        "tariffa_media_col": round(tariffa_media_col, 2),
+        "nota_tariffa_col": nota_tariffa_col,
         "costo_pedaggio": costo_pedaggio,
         "costo_totale": costo_totale,
         "senza_autostrada": senza_autostrada,
@@ -5249,30 +5312,32 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         c_l1, c_l2, c_l3 = st.columns(3)
         dist_casa_lav = float(
             c_l1.number_input(
-                "📍 Distanza Casa → Lavoro (km sola andata — indicare 0 se non c'è)",
+                "📍 Distanza Casa → Lavoro (km)",
                 min_value=0.0,
                 max_value=300.0,
                 step=1.0,
                 format="%.1f",
-                help="Indicare 0 se non c'è un percorso fisso casa/lavoro, es. agenti o lavoro itinerante",
+                help="Indicare 0 se non c'è un percorso fisso casa/lavoro (es. agenti o lavoro itinerante).",
                 key="calc_lav_dist",
             )
         )
         tratte_giorno = int(
             c_l2.selectbox(
-                "🔄 Tratte al giorno (2 = A/R, 4 = pausa pranzo)",
+                "🔁 Tratte al giorno",
                 options=[2, 4, 1, 3, 6],
                 index=0,
+                help="2 = Andata e Ritorno; 4 = se rientri anche a pranzo.",
                 key="calc_lav_tratte",
             )
         )
         gg_ferie = int(
             c_l3.number_input(
-                "📅 Giorni chiusura / ferie all'anno",
+                "🗓️ Giorni chiusura / ferie",
                 min_value=0,
                 max_value=100,
                 value=20,
                 step=1,
+                help="Giorni di ferie o chiusura aziendale sottratti dai 252 giorni lavorativi base italiani.",
                 key="calc_lav_ferie",
             )
         )
@@ -5592,6 +5657,14 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
             f'<span class="ev-v">{html.escape(tipo_strada_sol)} • {km_sol:.0f} km • {kwh_sol:.1f} kWh ({cons_sol:.1f} kWh/100km)</span></div>'
         )
 
+    nota_tariffa_col = str(sol.get("nota_tariffa_col") or "").strip()
+    riga_nota_tariffa = (
+        f'<div style="font-size:0.79rem; color:#93C5FD; margin:-2px 0 6px 0; line-height:1.35;">'
+        f'ℹ️ {html.escape(nota_tariffa_col)}</div>'
+        if nota_tariffa_col
+        else ""
+    )
+
     riepilogo_html = (
         f'<div class="ev-card" style="border-left-color:{colore_bordo};">'
         f'<div class="ev-card-top">'
@@ -5604,6 +5677,7 @@ def render_riepilogo_soluzione(sol, controlli, res, colore_bordo):
         f'<div class="ev-kv"><span class="ev-k">Preferenza sosta applicata</span><span class="ev-v">{pref_txt}</span></div>'
         f'<div class="ev-kv"><span class="ev-k">🏠 Energia da casa ({kwh_casa:.1f} kWh)</span><span class="ev-v">~{formatta_euro(costo_casa)}</span></div>'
         f'<div class="ev-kv"><span class="ev-k">⚡ Ricarica alle colonnine ({kwh_col:.1f} kWh)</span><span class="ev-v">~{formatta_euro(costo_col)}</span></div>'
+        f'{riga_nota_tariffa}'
         f'<div class="ev-kv"><span class="ev-k">🛣️ Stima pedaggio autostradale</span><span class="ev-v">{pedaggio_txt}</span></div>'
         f'<div class="ev-kv" style="border-top:1px solid rgba(255,255,255,0.12); padding-top:8px; margin-top:2px;">'
         f'<span class="ev-k" style="color:#F8FAFC; font-weight:700;">💶 Costo Totale Stimato Viaggio</span>'
@@ -6016,11 +6090,26 @@ with tab_viaggio:
 
             # Tariffe energia modificabili (casa e colonnine veloci) per il riepilogo economico completo
             # Tariffa casa predefinita calibrata sulla bolletta reale Alperia (0.21 €/kWh) per Fabio, Elizabeth, Alessia
-            costo_casa_default = (
-                0.21
-                if str(current_user or "").strip().lower() in ("fabio", "elizabeth", "alessia")
-                else 0.25
+            utente_low_s1 = str(current_user or "").strip().lower()
+            costo_casa_default = 0.21 if utente_low_s1 in ("fabio", "elizabeth", "alessia") else 0.25
+            # Default intelligente colonnine veloci: 0.47 €/kWh per auto Tesla (o profilo Tesla su auto personalizzata),
+            # 0.69 €/kWh per auto non Tesla (preservando eventuali modifiche manuali dell'utente)
+            e_auto_tesla_step1 = (
+                bool(auto_cfg.get("is_tesla_car"))
+                or ("tesla" in str(scelta_auto or "").lower())
+                or ("Altra Auto" in str(scelta_auto or "") and utente_low_s1 in UTENTI_TESLA)
             )
+            costo_col_default = TARIFFA_TESLA_SUC_KWH if e_auto_tesla_step1 else TARIFFA_ALTRI_OP_KWH
+            if "num_costo_col" not in st.session_state:
+                st.session_state["num_costo_col"] = costo_col_default
+                st.session_state["last_costo_col_default"] = costo_col_default
+            elif st.session_state.get("last_costo_col_default") != costo_col_default:
+                # Aggiorna automaticamente solo se l'utente non ha inserito una tariffa personalizzata diversa dal vecchio default
+                vecchio_def = float(st.session_state.get("last_costo_col_default", TARIFFA_ALTRI_OP_KWH))
+                if abs(float(st.session_state.get("num_costo_col", vecchio_def)) - vecchio_def) < 0.005:
+                    st.session_state["num_costo_col"] = costo_col_default
+                st.session_state["last_costo_col_default"] = costo_col_default
+
             c_t1, c_t2 = st.columns(2)
             costo_casa_kwh = c_t1.number_input(
                 "🏠 Costo energia casa (€/kWh)",
@@ -6035,11 +6124,12 @@ with tab_viaggio:
                 "⚡ Costo colonnine veloci (€/kWh)",
                 min_value=0.10,
                 max_value=2.00,
-                value=0.69,
                 step=0.01,
                 format="%.2f",
+                help="0,47 €/kWh tariffa media Tesla Supercharger • 0,69 €/kWh altri operatori (auto-calcolato su soste miste se lasci il default).",
                 key="num_costo_col",
             )
+            costo_col_personalizzato = abs(float(costo_col_kwh) - float(costo_col_default)) >= 0.005
 
             stagioni_chiavi = list(STAGIONI.keys())
             idx_stagione_default = stagioni_chiavi.index(stagione_predefinita())
@@ -6456,6 +6546,8 @@ with tab_viaggio:
                             "ore_permanenza": float(ore_permanenza),
                             "costo_casa_kwh": float(costo_casa_kwh),
                             "costo_col_kwh": float(costo_col_kwh),
+                            "costo_col_default": float(costo_col_default),
+                            "costo_col_personalizzato": bool(costo_col_personalizzato),
                             "cons_eff": cons_eff_viaggio,
                             "kwh_totali": kwh_totali,
                             "km_per_pct": km_per_pct_viaggio,
@@ -6862,6 +6954,8 @@ with _col_out_r:
             "sel_auto",
             "last_auto_sel",
             "num_costo_casa",
+            "num_costo_col",
+            "last_costo_col_default",
             "calc_ann_prezzo_casa",
             "calc_ann_prezzo_pub",
             "calc_ann_last_tesla",
