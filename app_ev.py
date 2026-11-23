@@ -187,23 +187,29 @@ OPERATORI_FAST_IT_NOTI = (
 
 AUTO_KIA_ENIRO = "🚙 Kia e-Niro Evolution 2020 (64 kWh)"
 AUTO_TESLA_MY = "🏎️ Tesla Model Y Performance 2023 (75 kWh)"
+AUTO_TESLA_M3_LR = "🚗 Tesla Model 3 Long Range RWD (79 kWh • 250 kW)"
 AUTO_MAZDA_MX30 = "🚗 Mazda MX-30 Versione Lancio (35.5 kWh)"
 AUTO_BMW_IX40 = "🚙 BMW iX xDrive40 08/2023 (76.6 kWh)"
 AUTO_BMW_IX3_50 = "🚙 BMW iX3 50 xDrive (108.7 kWh • 400 kW)"
 AUTO_BMW_IX5_60 = "🚐 BMW iX5 60 xDrive (141 kWh • 460 kW)"
 AUTO_LEAPMOTOR_B05_STD = "🚗 Leapmotor B05 — 56.2 kWh (Standard)"
 AUTO_LEAPMOTOR_B05_LR = "🚙 Leapmotor B05 — 67.1 kWh (Long Range)"
+AUTO_LEAPMOTOR_B10_STD = "🚙 Leapmotor B10 Standard (56.2 kWh netti • 140 kW)"
+AUTO_LEAPMOTOR_B10_LR = "🚙 Leapmotor B10 Long Range (67.1 kWh netti • 168 kW)"
 AUTO_PERSONALIZZATA = "⚙️ Altra Auto (Personalizzata)"
 
 AUTO_OPZIONI = [
     AUTO_KIA_ENIRO,
     AUTO_TESLA_MY,
+    AUTO_TESLA_M3_LR,
     AUTO_MAZDA_MX30,
     AUTO_BMW_IX40,
     AUTO_BMW_IX3_50,
     AUTO_BMW_IX5_60,
     AUTO_LEAPMOTOR_B05_STD,
     AUTO_LEAPMOTOR_B05_LR,
+    AUTO_LEAPMOTOR_B10_STD,
+    AUTO_LEAPMOTOR_B10_LR,
     AUTO_PERSONALIZZATA,
 ]
 
@@ -295,6 +301,7 @@ RISPARMIO_MINIMO_PONTE_MIN = 5  # Risparmio netto minimo (minuti) richiesto per 
 SOGLIA_EMERGENZA_JOLLY = 4.0  # Soglia ordinaria di sicurezza (%) per Piano B Livello 1 e Livello 2
 SOGLIA_EMERGENZA_ESTREMA_JOLLY = 1.0  # Soglia estrema (%) per Piano B Livello 3 con avviso esplicito sui rischi
 KEYWORDS_EBIKE = ("biciclett", "bici", "ebike", "e-bike", "bike")
+UTENTI_TESLA = ("fabio", "elizabeth", "alessia", "federico")
 UTENTI_FALLBACK_LOCALE = {
     "Fabio": "ev2026",
     "Alessia": "ev2026",
@@ -303,6 +310,8 @@ UTENTI_FALLBACK_LOCALE = {
     "Chiara": "ev2026",
     "Arianna": "ev2026",
     "Stefano": "ev2026",
+    "Massimo": "ev2026",
+    "Federico": "ev2026",
 }
 
 
@@ -319,6 +328,10 @@ def opzioni_auto_per_utente(current_user):
         return [AUTO_LEAPMOTOR_B05_STD, AUTO_LEAPMOTOR_B05_LR, AUTO_PERSONALIZZATA]
     if utente_low == "stefano":
         return [AUTO_BMW_IX3_50, AUTO_BMW_IX5_60, AUTO_PERSONALIZZATA]
+    if utente_low == "massimo":
+        return [AUTO_LEAPMOTOR_B10_STD, AUTO_LEAPMOTOR_B10_LR, AUTO_PERSONALIZZATA]
+    if utente_low == "federico":
+        return [AUTO_TESLA_M3_LR, AUTO_PERSONALIZZATA]
     return list(AUTO_OPZIONI)
 
 
@@ -950,6 +963,15 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "soc_veloce": 80,
             "is_tesla_car": True,
         }
+    if "Model 3" in scelta_auto:
+        return {
+            "nome": "Tesla Model 3 Long Range RWD",
+            "bat_kwh": 79.0,
+            "cons_base": 16.2,
+            "curva_dc": [(45, 240), (80, 155), (100, 65)],
+            "soc_veloce": 80,
+            "is_tesla_car": True,
+        }
     if "Mazda MX-30" in scelta_auto:
         return {
             "nome": "Mazda MX-30 Versione Lancio",
@@ -1004,6 +1026,24 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "soc_veloce": 80,
             "is_tesla_car": False,
         }
+    if "Leapmotor B10" in scelta_auto and "56.2" in scelta_auto:
+        return {
+            "nome": "Leapmotor B10 Standard (56.2 kWh)",
+            "bat_kwh": 56.2,
+            "cons_base": 21.0,
+            "curva_dc": [(55, 135), (80, 95), (100, 45)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Leapmotor B10" in scelta_auto and "67.1" in scelta_auto:
+        return {
+            "nome": "Leapmotor B10 Long Range (67.1 kWh)",
+            "bat_kwh": 67.1,
+            "cons_base": 21.5,
+            "curva_dc": [(55, 160), (80, 110), (100, 50)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
     dc_max = max(22.0, float(custom_dc))
     return {
         "nome": f"Auto Personalizzata ({custom_bat:.0f} kWh)",
@@ -1039,11 +1079,12 @@ def _scegli_nome_poi_migliore(nome_a, nome_b, fallback_nome):
 
 
 @st.cache_resource
-def load_chargers_db(db_mtime=0.0, filtro_ver=2):
+def load_chargers_db(db_mtime=0.0, filtro_ver=3):
     """
     Carica il database locale colonnine_it.json gestendo il formato a 8 campi
     [lat, lon, title, kw, is_dc, food_name, mall_name, in_ads] e la retrocompatibilità
-    con record a 7 o 5 campi, escludendo sempre le prese per biciclette/e-bike.
+    con record a 7 o 5 campi, escludendo sempre le prese per biciclette/e-bike e
+    correggendo le stazioni Free To X senza tag kW (o <= 75 kW) a 300 kW HPC.
     """
     _ = (db_mtime, filtro_ver)
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "colonnine_it.json")
@@ -1072,13 +1113,20 @@ def load_chargers_db(db_mtime=0.0, filtro_ver=2):
         titolo_str = str(titolo)
         if e_colonnina_ebike(titolo_str):
             continue
+        kw_int = int(kw or 0)
+        is_dc_int = int(is_dc or 0)
+        t_low_db = titolo_str.lower()
+        # Tutte le stazioni Free To X autostradali sono HPC da 300-400 kW
+        if ("free to x" in t_low_db or "freetox" in t_low_db) and kw_int <= 75:
+            kw_int = 300
+            is_dc_int = 1
         normalizzati.append(
             (
                 float(lat),
                 float(lon),
                 titolo_str,
-                int(kw),
-                int(is_dc),
+                kw_int,
+                is_dc_int,
                 has_food,
                 has_mall,
                 food_name,
@@ -5087,6 +5135,20 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 st.session_state.get("num_costo_casa", default_casa)
             )
 
+        # Inizializza i default specifici per profilo utente (es. Federico agente 50.000 km/anno)
+        if st.session_state.get("calc_ann_init_user") != utente_low:
+            st.session_state["calc_ann_init_user"] = utente_low
+            if utente_low == "federico":
+                st.session_state["calc_lav_dist"] = 0.0
+                st.session_state["calc_ext_km"] = 50000
+                st.session_state["calc_ext_auto_pct"] = 60
+                st.session_state["calc_ext_casa_pct"] = 60
+            else:
+                st.session_state.setdefault("calc_lav_dist", 15.0)
+                st.session_state.setdefault("calc_ext_km", 7000)
+                st.session_state.setdefault("calc_ext_auto_pct", 50)
+                st.session_state.setdefault("calc_ext_casa_pct", 80)
+
         # Menu auto dedicato in cima al calcolatore, preselezionato sull'auto scelta nello Step 1
         opz_auto_calc = opzioni_auto_per_utente(current_user)
         auto_step1 = st.session_state.get("sel_auto")
@@ -5131,6 +5193,20 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             else (auto_cfg if isinstance(auto_cfg, dict) and auto_cfg.get("cons_base") else None)
         )
 
+        # Prezzo medio pubblico di default: 0.47 €/kWh (Tesla Supercharger) per auto/utenti Tesla, altrimenti 0.65 €/kWh
+        e_tesla_calc = (
+            bool(isinstance(cfg_eff, dict) and cfg_eff.get("is_tesla_car"))
+            or ("tesla" in str(scelta_auto_calc or "").lower())
+            or (utente_low in UTENTI_TESLA)
+        )
+        default_pub = 0.47 if e_tesla_calc else 0.65
+        if (
+            "calc_ann_prezzo_pub" not in st.session_state
+            or st.session_state.get("calc_ann_last_tesla") != e_tesla_calc
+        ):
+            st.session_state["calc_ann_prezzo_pub"] = default_pub
+            st.session_state["calc_ann_last_tesla"] = e_tesla_calc
+
         guida_eff = guida_scelta or st.session_state.get("sel_guida") or "🚗 Guida Regolare"
         stile_dict = STILI_GUIDA.get(guida_eff, {"autostrada": 1.0, "statale": 1.0})
 
@@ -5173,12 +5249,12 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         c_l1, c_l2, c_l3 = st.columns(3)
         dist_casa_lav = float(
             c_l1.number_input(
-                "📍 Distanza Casa → Lavoro (km sola andata)",
+                "📍 Distanza Casa → Lavoro (km sola andata — indicare 0 se non c'è)",
                 min_value=0.0,
                 max_value=300.0,
-                value=15.0,
                 step=1.0,
                 format="%.1f",
+                help="Indicare 0 se non c'è un percorso fisso casa/lavoro, es. agenti o lavoro itinerante",
                 key="calc_lav_dist",
             )
         )
@@ -5203,13 +5279,22 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
 
         gg_eff = max(0, 252 - gg_ferie)
         km_lavoro = round(dist_casa_lav * tratte_giorno * gg_eff)
-        st.markdown(
-            f'<div class="ev-info-box" style="margin-top:2px; margin-bottom:10px;">'
-            f'📆 <strong>= {gg_eff} giorni lavorativi effettivi/anno ({_fmt_int_it(km_lavoro)} km)</strong> '
-            f'<span style="color:#94A3B8;">(252 giorni lavorativi base italiani meno {gg_ferie} gg di ferie/chiusura)</span>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
+        if dist_casa_lav <= 0.0:
+            st.markdown(
+                '<div class="ev-info-box" style="margin-top:2px; margin-bottom:10px;">'
+                'ℹ️ <strong>Nessun percorso fisso Casa – Lavoro (0 km):</strong> '
+                '<span style="color:#94A3B8;">il confronto finale considera direttamente i Viaggi / Percorrenza Annua qui sotto.</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f'<div class="ev-info-box" style="margin-top:2px; margin-bottom:10px;">'
+                f'📆 <strong>= {gg_eff} giorni lavorativi effettivi/anno ({_fmt_int_it(km_lavoro)} km)</strong> '
+                f'<span style="color:#94A3B8;">(252 giorni lavorativi base italiani meno {gg_ferie} gg di ferie/chiusura)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
         opzioni_percorso_lav = [
             "🏙️ Urbano",
@@ -5259,10 +5344,9 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         ce_1, ce_2 = st.columns(2)
         km_extra_annui = int(
             ce_1.number_input(
-                "🗺️ Km extra annui (weekend, gite, vacanze)",
+                "🗺️ Km extra / itineranti annui (weekend, gite, vacanze, lavoro)",
                 min_value=0,
-                max_value=100000,
-                value=7000,
+                max_value=150000,
                 step=500,
                 key="calc_ext_km",
             )
@@ -5272,7 +5356,6 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 "🛣️ Quota autostrada viaggi extra (%)",
                 min_value=0,
                 max_value=100,
-                value=50,
                 step=5,
                 key="calc_ext_auto_pct",
             )
@@ -5284,7 +5367,6 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 "🏠 Ricariche a Casa sui viaggi extra (%)",
                 min_value=0,
                 max_value=100,
-                value=80,
                 step=5,
                 key="calc_ext_casa_pct",
             )
@@ -5321,10 +5403,9 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
                 "⚡ Pubblica (€/kWh)",
                 min_value=0.10,
                 max_value=1.50,
-                value=0.65,
-                step=0.05,
+                step=0.01,
                 format="%.2f",
-                help="Modifica se usi abbonamenti, es. 0.45 - 0.55 €/kWh",
+                help="0,47 €/kWh tariffa Tesla Supercharger • 0,65 €/kWh media pubblica (modifica se usi abbonamenti)",
                 key="calc_ann_prezzo_pub",
             )
         )
@@ -5382,7 +5463,23 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         euro_100_ev = (spesa_ev_tot / km_tot_annui) * 100.0 if km_tot_annui > 0 else 0.0
         euro_100_term = (spesa_term_tot / km_tot_annui) * 100.0 if km_tot_annui > 0 else 0.0
 
-        # --- RIEPILOGO FINALE SU 3 RIGHE CHIARE + PROIEZIONE 5 ANNI ---
+        # --- RIEPILOGO FINALE (NASCONDE CASA-LAVORO SE DISTANZA == 0) + PROIEZIONE 5 ANNI ---
+        riga_casa_lavoro_html = ""
+        if dist_casa_lav > 0.0:
+            riga_casa_lavoro_html = (
+                f'<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">'
+                f'<td style="padding:10px 12px; font-weight:600;">🏢 Casa – Lavoro ({_fmt_int_it(km_lavoro)} km)</td>'
+                f'<td style="padding:10px 10px; text-align:right; color:#93C5FD; font-weight:600;">{_fmt_int_it(spesa_ev_lav)} €</td>'
+                f'<td style="padding:10px 10px; text-align:right; color:#FDE68A; font-weight:600;">{_fmt_int_it(spesa_term_lav)} €</td>'
+                f'<td style="padding:10px 12px; text-align:right; color:{col_rl}; font-weight:700;">{_fmt_risp_it(risp_lav)}</td>'
+                f'</tr>'
+            )
+        label_extra_tab = (
+            f"🏖️ Viaggi / Percorrenza Annua ({_fmt_int_it(km_extra_annui)} km)"
+            if dist_casa_lav <= 0.0
+            else f"🏖️ Viaggi Extra ({_fmt_int_it(km_extra_annui)} km)"
+        )
+
         st.markdown(
             f'<div style="overflow-x:auto; margin-top:12px; border-radius:12px; border:1px solid #2A2E39; background:#131722;">'
             f'<table style="width:100%; border-collapse:collapse; font-size:0.9rem; color:#F1F5F9;">'
@@ -5395,14 +5492,9 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
             f'</tr>'
             f'</thead>'
             f'<tbody>'
-            f'<tr style="border-bottom:1px solid rgba(255,255,255,0.06);">'
-            f'<td style="padding:10px 12px; font-weight:600;">🏢 Casa – Lavoro ({_fmt_int_it(km_lavoro)} km)</td>'
-            f'<td style="padding:10px 10px; text-align:right; color:#93C5FD; font-weight:600;">{_fmt_int_it(spesa_ev_lav)} €</td>'
-            f'<td style="padding:10px 10px; text-align:right; color:#FDE68A; font-weight:600;">{_fmt_int_it(spesa_term_lav)} €</td>'
-            f'<td style="padding:10px 12px; text-align:right; color:{col_rl}; font-weight:700;">{_fmt_risp_it(risp_lav)}</td>'
-            f'</tr>'
+            f'{riga_casa_lavoro_html}'
             f'<tr style="border-bottom:1px solid rgba(255,255,255,0.08);">'
-            f'<td style="padding:10px 12px; font-weight:600;">🏖️ Viaggi Extra ({_fmt_int_it(km_extra_annui)} km)</td>'
+            f'<td style="padding:10px 12px; font-weight:600;">{label_extra_tab}</td>'
             f'<td style="padding:10px 10px; text-align:right; color:#93C5FD; font-weight:600;">{_fmt_int_it(spesa_ev_ext)} €</td>'
             f'<td style="padding:10px 10px; text-align:right; color:#FDE68A; font-weight:600;">{_fmt_int_it(spesa_term_ext)} €</td>'
             f'<td style="padding:10px 12px; text-align:right; color:{col_re}; font-weight:700;">{_fmt_risp_it(risp_ext)}</td>'
@@ -5779,10 +5871,15 @@ if not st.session_state.get("operatore_configurato", False):
         "🔴 Tesla Supercharger",
         "✍️ Altro marchio...",
     ]
+    idx_onb_default = (
+        opzioni_onboarding.index("🔴 Tesla Supercharger")
+        if str(current_user or "").strip().lower() in UTENTI_TESLA
+        else 0
+    )
     scelta_onb = st.selectbox(
         "🏢 Operatore / Abbonamento preferito",
         opzioni_onboarding,
-        index=0,
+        index=idx_onb_default,
         key="sel_onboarding_op",
     )
     custom_onb = ""
@@ -5824,7 +5921,7 @@ if not st.session_state.get("operatore_configurato", False):
 
 _db_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "colonnine_it.json")
 _db_mtime = os.path.getmtime(_db_file) if os.path.exists(_db_file) else 0.0
-db = load_chargers_db(_db_mtime, filtro_ver=2)
+db = load_chargers_db(_db_mtime, filtro_ver=3)
 
 # Inizializzazione stato sessione (benvenuto pulito all'apertura / dopo F5)
 if st.session_state.pop("reset_nuovo_viaggio", False):
@@ -5896,15 +5993,17 @@ with tab_viaggio:
                 st.session_state.pop("sel_auto", None)
 
             scelta_auto = st.selectbox("Che auto guidi?", opzioni_auto_utente, index=0, key="sel_auto")
-            # Aggiorna il default della checkbox rabbocco veloce AdS quando cambia l'auto selezionata
+            # Preseleziona automaticamente Tesla Supercharger e rabbocco veloce AdS quando si sceglie un'auto Tesla
             if st.session_state.get("last_auto_sel") != scelta_auto:
                 st.session_state["last_auto_sel"] = scelta_auto
-                if "chk_rabbocco_ads" not in st.session_state:
-                    st.session_state["chk_rabbocco_ads"] = ("Model Y" in scelta_auto) or (
-                        st.session_state.get("default_rete") == "operatore"
-                    )
-                elif "Model Y" in scelta_auto:
+                e_auto_tesla_sel = "tesla" in str(scelta_auto or "").lower()
+                if e_auto_tesla_sel:
                     st.session_state["chk_rabbocco_ads"] = True
+                    st.session_state["rad_rete"] = "operatore"
+                    if st.session_state.get("sel_operatore", OPERATORI_OPZIONI[0]) == OPERATORI_OPZIONI[0]:
+                        st.session_state["sel_operatore"] = "🔴 Tesla Supercharger"
+                elif "chk_rabbocco_ads" not in st.session_state:
+                    st.session_state["chk_rabbocco_ads"] = st.session_state.get("default_rete") == "operatore"
 
             custom_bat, custom_cons, custom_dc = 60.0, 18.0, 120
             if "Altra Auto" in scelta_auto:
@@ -6127,12 +6226,15 @@ with tab_viaggio:
                 )
             nome_operatore, operatore_keywords = estrai_info_operatore(scelta_operatore, operatore_custom)
 
-            # Visibilità 3ª opzione in base all'operatore scelto e al profilo utente:
+            # Visibilità 3ª opzione in base all'operatore scelto, all'auto Tesla e al profilo utente:
             # - Operatore specifico -> 3 opzioni con "🎯 Solo {nome_operatore} (anche fuori casello)"
             #   (oppure "🔴 Solo Tesla Supercharger" se ha scelto Tesla)
-            # - "Tutti gli operatori" -> "🔴 Solo Tesla Supercharger" solo per Fabio, Elizabeth, Alessia;
-            #   per tutti gli altri utenti (Arianna, Chiara, Luciano, ecc.) solo le prime 2 opzioni
-            utente_famiglia_tesla = str(current_user or "").strip().lower() in ("fabio", "elizabeth", "alessia")
+            # - "Tutti gli operatori" -> "🔴 Solo Tesla Supercharger" per utenti Tesla (Fabio, Elizabeth, Alessia,
+            #   Federico) o se è selezionata una qualsiasi auto Tesla; per gli altri utenti solo le prime 2 opzioni
+            utente_famiglia_tesla = (
+                str(current_user or "").strip().lower() in UTENTI_TESLA
+                or ("tesla" in str(scelta_auto or "").lower())
+            )
             mappa_etichette_rete = {
                 "tutte": "⚡ Tutte le colonnine veloci (Precedenza Autostrada)",
                 "ads": "🛣️ Solo in Autostrada (Aree di Servizio / Autogrill)",
@@ -6761,8 +6863,16 @@ with _col_out_r:
             "last_auto_sel",
             "num_costo_casa",
             "calc_ann_prezzo_casa",
+            "calc_ann_prezzo_pub",
+            "calc_ann_last_tesla",
+            "calc_ann_init_user",
             "calc_ann_auto",
             "calc_ann_sync_step1",
+            "calc_lav_dist",
+            "calc_ext_km",
+            "calc_ext_auto_pct",
+            "calc_ext_casa_pct",
+            "sel_onboarding_op",
         ):
             st.session_state.pop(chiave, None)
         for chiave in list(st.session_state.keys()):
