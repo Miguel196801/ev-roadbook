@@ -7,6 +7,7 @@ su Arrivo (B) e Rientro a Casa (A).
 """
 
 import base64
+import csv
 from datetime import date, datetime, time
 import hmac
 import html
@@ -5882,6 +5883,126 @@ def inietta_icona_mobile_head():
     )
 
 
+def _percorso_registro_accessi():
+    """Restituisce il percorso del file CSV locale per il registro accessi."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "accessi_ev.csv")
+
+
+def _timestamp_europa_roma():
+    """Restituisce data e ora correnti nel fuso orario Europe/Rome (YYYY-MM-DD HH:MM:SS)."""
+    try:
+        if ZoneInfo is not None:
+            return datetime.now(ZoneInfo("Europe/Rome")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        pass
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def registra_accesso_ev(utente, azione="Login"):
+    """Registra in modo non bloccante un accesso o un viaggio su accessi_ev.csv e sui log standard."""
+    try:
+        timestamp = _timestamp_europa_roma()
+        utente_pulito = str(utente or "").strip() or "Sconosciuto"
+        azione_pulita = str(azione or "Login").replace("\n", " ").replace("\r", " ").strip()
+        if azione_pulita == "Login":
+            print(f"[ACCESSO EV] {timestamp} - {utente_pulito}")
+        else:
+            print(f"[ACCESSO EV] {timestamp} - {utente_pulito} | {azione_pulita}")
+
+        percorso_csv = _percorso_registro_accessi()
+        scrivi_intestazione = (not os.path.exists(percorso_csv)) or (os.path.getsize(percorso_csv) == 0)
+        with open(percorso_csv, mode="a", encoding="utf-8", newline="") as f_csv:
+            writer = csv.writer(f_csv, delimiter=";")
+            if scrivi_intestazione:
+                writer.writerow(["Data_Ora", "Utente", "Azione"])
+            writer.writerow([timestamp, utente_pulito, azione_pulita])
+    except Exception:
+        pass
+
+
+def render_pannello_registro_accessi(current_user):
+    """Mostra il mini-pannello di consultazione degli accessi esclusivamente all'utente Fabio."""
+    if str(current_user or "").strip().lower() != "fabio":
+        return
+
+    with st.expander("📊 Registro Accessi & Utilizzo (Solo Fabio)", expanded=False):
+        percorso_csv = _percorso_registro_accessi()
+        if not os.path.exists(percorso_csv):
+            st.info("Nessun accesso registrato finora in accessi_ev.csv.")
+            return
+
+        righe = []
+        contenuto_csv_bytes = b""
+        try:
+            with open(percorso_csv, mode="rb") as f_raw:
+                contenuto_csv_bytes = f_raw.read()
+            with open(percorso_csv, mode="r", encoding="utf-8", newline="") as f_csv:
+                reader = csv.DictReader(f_csv, delimiter=";")
+                for riga in reader:
+                    if not riga:
+                        continue
+                    data_ora = str(riga.get("Data_Ora") or "").strip()
+                    utente_r = str(riga.get("Utente") or "").strip()
+                    azione_r = str(riga.get("Azione") or "").strip()
+                    if data_ora or utente_r or azione_r:
+                        righe.append({
+                            "Data_Ora": data_ora,
+                            "Utente": utente_r,
+                            "Azione": azione_r,
+                        })
+        except Exception as err:
+            st.warning(f"Impossibile leggere il registro accessi: {err}")
+            return
+
+        if not righe:
+            st.info("Il file accessi_ev.csv è presente ma non contiene ancora righe.")
+            return
+
+        tot_login = sum(1 for r in righe if r["Azione"] == "Login")
+        tot_viaggi = sum(1 for r in righe if r["Azione"].startswith("Viaggio:"))
+
+        stat_utenti = {}
+        for r in righe:
+            u = r["Utente"] or "Sconosciuto"
+            if u not in stat_utenti:
+                stat_utenti[u] = {"Utente": u, "Accessi": 0, "Viaggi": 0, "Ultimo evento": ""}
+            if r["Azione"] == "Login":
+                stat_utenti[u]["Accessi"] += 1
+            elif r["Azione"].startswith("Viaggio:"):
+                stat_utenti[u]["Viaggi"] += 1
+            if r["Data_Ora"]:
+                stat_utenti[u]["Ultimo evento"] = r["Data_Ora"]
+
+        riepilogo_utenti = sorted(
+            stat_utenti.values(),
+            key=lambda item: (-item["Accessi"], -item["Viaggi"], item["Utente"].lower()),
+        )
+
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            st.metric("Accessi totali", tot_login)
+        with col_m2:
+            st.metric("Viaggi calcolati", tot_viaggi)
+        with col_m3:
+            st.metric("Utenti attivi", len(riepilogo_utenti))
+
+        st.markdown("**👥 Conteggio per utente**")
+        st.dataframe(riepilogo_utenti, use_container_width=True, hide_index=True)
+
+        ultime_50 = list(reversed(righe))[:50]
+        st.markdown(f"**🕒 Ultime {len(ultime_50)} attività (più recenti in alto)**")
+        st.dataframe(ultime_50, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "⬇️ Scarica Registro CSV",
+            data=contenuto_csv_bytes,
+            file_name="accessi_ev.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key="btn_download_registro_accessi",
+        )
+
+
 # ==============================================================================
 # INTERFACCIA PRINCIPALE
 # ==============================================================================
@@ -5967,6 +6088,11 @@ if not st.session_state.get("auth_user"):
     st.stop()
 
 current_user = st.session_state["auth_user"]
+
+# Registra l'accesso una sola volta per sessione autenticata
+if not st.session_state.get("accesso_registrato"):
+    registra_accesso_ev(current_user, "Login")
+    st.session_state["accesso_registrato"] = True
 
 # Scelta guidata obbligatoria al primo accesso dopo il Login sull'operatore/abbonamento preferito
 if not st.session_state.get("operatore_configurato", False):
@@ -6631,6 +6757,9 @@ with tab_viaggio:
                             "nodi_ritorno": nodi_ritorno,
                         }
 
+                        # Registra in modo non bloccante anche il nuovo viaggio calcolato
+                        registra_accesso_ev(current_user, f"Viaggio: {orig} -> {dest}")
+
                         # Precarica i risultati di arrivo (B) anche nel Tab 2 per consultazione immediata
                         st.session_state["sync_zona_dest"] = dest
                         st.session_state["zona_res"] = {
@@ -6996,6 +7125,9 @@ with tab_zona:
 # Calcolatore compatto di risparmio annuale Elettrica vs Termica in fondo alla pagina
 render_calcolatore_risparmio_annuale(current_user)
 
+# Mini-pannello di consultazione registro accessi riservato esclusivamente a Fabio
+render_pannello_registro_accessi(current_user)
+
 # Pulsante discreto di disconnessione in fondo alla pagina
 st.markdown(
     '<div style="margin-top: 1.4rem; border-top: 1px solid #2A2E39; padding-top: 0.9rem;"></div>',
@@ -7008,6 +7140,7 @@ with _col_out_r:
     if st.button("🚪 Esci", key="btn_logout_ev", use_container_width=True):
         for chiave in (
             "auth_user",
+            "accesso_registrato",
             "operatore_configurato",
             "default_operatore",
             "default_operatore_custom",
