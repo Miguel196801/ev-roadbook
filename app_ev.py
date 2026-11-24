@@ -3807,14 +3807,23 @@ def costruisci_righe_locali(lat, lon, food_name, mall_name):
     return "".join(righe)
 
 
-def render_banner_verdetto(sol_a, res):
+def render_banner_verdetto(sol_a, res, sol_b=None):
     """Mostra il verdetto immediato con riassunto telegrafico Andata/Ritorno in cima ai risultati."""
-    if not sol_a or not sol_a.get("valido"):
+    sol_a_valida = bool(sol_a and sol_a.get("valido"))
+    sol_b_valida = bool(sol_b and sol_b.get("valido"))
+    if not sol_a_valida:
+        if sol_b_valida:
+            st.info(
+                "ℹ️ Nessuna colonnina trovata con il filtro restrittivo della Soluzione A "
+                "(es. Solo in Autostrada): abbiamo attivato automaticamente la "
+                "**SOLUZIONE B (Tutte le colonnine veloci)** qui sotto."
+            )
+            return
         st.markdown(
             '<div class="ev-card" style="background:linear-gradient(135deg, #2D1A1E 0%, #1E222D 100%); '
             'border-color:rgba(239,68,68,0.45); border-left:5px solid #EF4444; padding:16px 18px;">'
             '<div style="font-size:1.12rem; font-weight:800; color:#FCA5A5;">⚠️ IMPOSSIBILE COMPLETARE CON I FILTRI ATTUALI</div>'
-            '<div class="ev-card-sub" style="margin-top:4px;">Verifica Soluzione B o allenta i filtri di rete/operatore.</div>'
+            '<div class="ev-card-sub" style="margin-top:4px;">Allenta i filtri di rete/operatore o riduci la soglia minima di batteria.</div>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -5162,8 +5171,8 @@ def render_svg_mappa_interattiva(svg_markup, height=360):
     components.html(html_interattivo, height=int(height), scrolling=False)
 
 
-def render_roadbook_visivo(sol, res):
-    """Renderizza l'expander '🗺️ Mappa Visiva del Percorso' con SVG vettoriale zoomabile per ogni tratta."""
+def render_roadbook_visivo(sol, res, titolo_expander="🗺️ Mappa Visiva del Percorso"):
+    """Renderizza l'expander della Mappa Visiva del Percorso con SVG vettoriale zoomabile per ogni tratta."""
     if not sol or not sol.get("valido"):
         return
 
@@ -5184,7 +5193,7 @@ def render_roadbook_visivo(sol, res):
         soste_andata = list(soste_sol)
         soste_ritorno = []
 
-    with st.expander("🗺️ Mappa Visiva del Percorso", expanded=True):
+    with st.expander(titolo_expander, expanded=True):
         svg_andata = genera_svg_roadbook_visivo(
             titolo_tratta=f"➡️ ANDATA • {res['orig']} → {res['dest']}",
             orig_nome=res["orig"],
@@ -6674,9 +6683,12 @@ with tab_viaggio:
                 height=0,
             )
 
+        sol_a_valida = bool(sol_a_dyn and sol_a_dyn.get("valido"))
+        sol_b_valida = bool(sol_b_dyn and sol_b_dyn.get("valido"))
+
         # Verdetto immediato ben evidente in cima ai risultati prima delle card Soluzione A / B
-        render_banner_verdetto(sol_a_dyn, res)
-        render_consiglio_batteria_bassa(sol_a_dyn, res)
+        render_banner_verdetto(sol_a_dyn, res, sol_b=sol_b_dyn)
+        render_consiglio_batteria_bassa(sol_a_dyn if sol_a_valida else sol_b_dyn, res)
 
         # KPI sintetici in griglia mobile-first con consumo totale (kWh) + consumo medio (kWh/100km)
         st.markdown(
@@ -6705,9 +6717,10 @@ with tab_viaggio:
             render_card_confronto_strade(sol_a_dyn, sol_b_dyn, res)
 
         # Roadbook Visivo in SVG vettoriale subito sopra le card delle soste
-        sol_a_valida = bool(sol_a_dyn and sol_a_dyn.get("valido"))
-        sol_per_mappa = sol_a_dyn if sol_a_valida else sol_b_dyn
-        render_roadbook_visivo(sol_per_mappa, res)
+        usa_sol_b_mappa = (not sol_a_valida) and sol_b_valida
+        sol_per_mappa = sol_b_dyn if usa_sol_b_mappa else sol_a_dyn
+        titolo_mappa = "🗺️ Mappa Visiva del Percorso (Soluzione B)" if usa_sol_b_mappa else "🗺️ Mappa Visiva del Percorso"
+        render_roadbook_visivo(sol_per_mappa, res, titolo_expander=titolo_mappa)
 
         # Scheda espandibile SOLUZIONE A (aperta di default)
         tempo_a_txt = formatta_durata(sol_a_dyn["tempo_totale_min"]) if sol_a_valida else "N.D."
