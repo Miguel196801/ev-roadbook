@@ -5223,25 +5223,46 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
     st.markdown('<div style="margin-top: 1.2rem;"></div>', unsafe_allow_html=True)
     with st.expander("💶 Calcolatore Risparmio Annuale: Elettrica vs Termica", expanded=False):
         utente_low = str(current_user or "").strip().lower()
-        default_casa = 0.21 if utente_low in ("fabio", "elizabeth", "alessia") else 0.25
-        if "calc_ann_prezzo_casa" not in st.session_state:
-            st.session_state["calc_ann_prezzo_casa"] = float(
-                st.session_state.get("num_costo_casa", default_casa)
-            )
+        if utente_low in ("fabio", "elizabeth", "alessia"):
+            default_casa = 0.21
+        elif utente_low == "raffaele":
+            default_casa = 0.0
+        else:
+            default_casa = 0.25
 
-        # Inizializza i default specifici per profilo utente (es. Federico agente 50.000 km/anno)
+        # Inizializza i default specifici per profilo utente (Federico agente 50k km/anno, Raffaele tessera aziendale)
         if st.session_state.get("calc_ann_init_user") != utente_low:
             st.session_state["calc_ann_init_user"] = utente_low
             if utente_low == "federico":
                 st.session_state["calc_lav_dist"] = 0.0
+                st.session_state["calc_lav_casa_pct"] = 95
                 st.session_state["calc_ext_km"] = 50000
                 st.session_state["calc_ext_auto_pct"] = 60
                 st.session_state["calc_ext_casa_pct"] = 60
+                st.session_state["calc_ann_prezzo_casa"] = float(
+                    st.session_state.get("num_costo_casa", default_casa)
+                )
+            elif utente_low == "raffaele":
+                st.session_state["calc_lav_dist"] = 15.0
+                st.session_state["calc_lav_casa_pct"] = 100
+                st.session_state["calc_ext_km"] = 10000
+                st.session_state["calc_ext_auto_pct"] = 50
+                st.session_state["calc_ext_casa_pct"] = 100
+                st.session_state["calc_ann_prezzo_casa"] = 0.0
             else:
                 st.session_state.setdefault("calc_lav_dist", 15.0)
+                st.session_state.setdefault("calc_lav_casa_pct", 95)
                 st.session_state.setdefault("calc_ext_km", 7000)
                 st.session_state.setdefault("calc_ext_auto_pct", 50)
                 st.session_state.setdefault("calc_ext_casa_pct", 80)
+                st.session_state["calc_ann_prezzo_casa"] = float(
+                    st.session_state.get("num_costo_casa", default_casa)
+                )
+
+        if "calc_ann_prezzo_casa" not in st.session_state:
+            st.session_state["calc_ann_prezzo_casa"] = float(default_casa)
+        if "calc_lav_casa_pct" not in st.session_state:
+            st.session_state["calc_lav_casa_pct"] = 100 if utente_low == "raffaele" else 95
 
         # Menu auto dedicato in cima al calcolatore, preselezionato sull'auto scelta nello Step 1
         opz_auto_calc = opzioni_auto_per_utente(current_user)
@@ -5414,10 +5435,9 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         cl_s1, cl_s2 = st.columns([2, 1])
         quota_casa_lav = int(
             cl_s1.slider(
-                "🏠 Ricariche a Casa per Casa – Lavoro (%)",
+                "🏠 Ricariche a Casa / Azienda per Casa – Lavoro (%)",
                 min_value=0,
                 max_value=100,
-                value=95,
                 step=5,
                 key="calc_lav_casa_pct",
             )
@@ -5460,7 +5480,7 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         ce_s1, ce_s2 = st.columns([2, 1])
         quota_casa_ext = int(
             ce_s1.slider(
-                "🏠 Ricariche a Casa sui viaggi extra (%)",
+                "🏠 Ricariche a Casa / Azienda sui viaggi extra (%)",
                 min_value=0,
                 max_value=100,
                 step=5,
@@ -5486,22 +5506,22 @@ def render_calcolatore_risparmio_annuale(current_user, auto_cfg=None, guida_scel
         prezzo_casa = float(
             t1.number_input(
                 "🏠 Casa (€/kWh)",
-                min_value=0.05,
+                min_value=0.0,
                 max_value=1.00,
                 step=0.01,
                 format="%.2f",
-                help="Tariffa energia domestica in €/kWh",
+                help="Tariffa energia domestica o aziendale in €/kWh (0,00 se gratuita in azienda o da fotovoltaico).",
                 key="calc_ann_prezzo_casa",
             )
         )
         prezzo_pub = float(
             t2.number_input(
                 "⚡ Pubblica (€/kWh)",
-                min_value=0.10,
+                min_value=0.0,
                 max_value=1.50,
                 step=0.01,
                 format="%.2f",
-                help="0,47 €/kWh tariffa Tesla Supercharger • 0,65 €/kWh media pubblica (modifica se usi abbonamenti)",
+                help="0,47 €/kWh tariffa Tesla Supercharger • 0,65 €/kWh media pubblica • 0,00 € se tessera gratuita.",
                 key="calc_ann_prezzo_pub",
             )
         )
@@ -6122,7 +6142,12 @@ with tab_viaggio:
             # Tariffe energia modificabili (casa e colonnine veloci) per il riepilogo economico completo
             # Tariffa casa predefinita calibrata sulla bolletta reale Alperia (0.21 €/kWh) per Fabio, Elizabeth, Alessia
             utente_low_s1 = str(current_user or "").strip().lower()
-            costo_casa_default = 0.21 if utente_low_s1 in ("fabio", "elizabeth", "alessia") else 0.25
+            if utente_low_s1 in ("fabio", "elizabeth", "alessia"):
+                costo_casa_default = 0.21
+            elif utente_low_s1 == "raffaele":
+                costo_casa_default = 0.0
+            else:
+                costo_casa_default = 0.25
             # Default intelligente colonnine veloci: 0.47 €/kWh per auto Tesla (o profilo Tesla su auto personalizzata),
             # 0.69 €/kWh per auto non Tesla (preservando eventuali modifiche manuali dell'utente)
             e_auto_tesla_step1 = (
@@ -6144,16 +6169,17 @@ with tab_viaggio:
             c_t1, c_t2 = st.columns(2)
             costo_casa_kwh = c_t1.number_input(
                 "🏠 Costo energia casa (€/kWh)",
-                min_value=0.05,
+                min_value=0.0,
                 max_value=1.50,
                 value=costo_casa_default,
                 step=0.01,
                 format="%.2f",
+                help="Imposta 0,00 €/kWh per ricarica gratuita in azienda o con fotovoltaico.",
                 key="num_costo_casa",
             )
             costo_col_kwh = c_t2.number_input(
                 "⚡ Costo colonnine veloci (€/kWh)",
-                min_value=0.10,
+                min_value=0.0,
                 max_value=2.00,
                 step=0.01,
                 format="%.2f",
@@ -6994,6 +7020,7 @@ with _col_out_r:
             "calc_ann_auto",
             "calc_ann_sync_step1",
             "calc_lav_dist",
+            "calc_lav_casa_pct",
             "calc_ext_km",
             "calc_ext_auto_pct",
             "calc_ext_casa_pct",
