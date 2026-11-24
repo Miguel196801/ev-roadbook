@@ -376,18 +376,20 @@ def inietta_stile_dark():
     st.markdown(
         """
 <style>
-html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"] {
+html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stMain"], .main {
     background-color: #131722 !important;
     color: #E6EDF3 !important;
     overflow-y: auto !important;
+    overflow-x: hidden !important;
     height: auto !important;
+    min-height: 100vh !important;
 }
 [data-testid="stHeader"] {
     background-color: #131722 !important;
 }
 .block-container {
     padding-top: 2.5rem !important;
-    padding-bottom: 4rem !important;
+    padding-bottom: 120px !important;
     max-width: 760px !important;
 }
 h1, h2, h3, h4, p, label, span, .stMarkdown {
@@ -5020,12 +5022,7 @@ def render_svg_mappa_interattiva(svg_markup, height=360):
     resetView();
   }});
 
-  // Zoom con rotella mouse centrato sul cursore
-  box.addEventListener("wheel", function(e) {{
-    e.preventDefault();
-    var factor = e.deltaY < 0 ? 1.18 : (1.0 / 1.18);
-    zoomAtClient(scale * factor, e.clientX, e.clientY);
-  }}, {{ passive: false }});
+  // Nota: nessun preventDefault() su 'wheel' affinché la rotella del mouse scorra sempre fluidamente la pagina su PC.
 
   // Trascinamento mouse (pan quando zoom > 1.0x)
   var mouseDown = false;
