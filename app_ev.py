@@ -196,6 +196,9 @@ AUTO_LEAPMOTOR_B05_STD = "🚗 Leapmotor B05 — 56.2 kWh (Standard)"
 AUTO_LEAPMOTOR_B05_LR = "🚙 Leapmotor B05 — 67.1 kWh (Long Range)"
 AUTO_LEAPMOTOR_B10_STD = "🚙 Leapmotor B10 Standard (56.2 kWh netti • 140 kW)"
 AUTO_LEAPMOTOR_B10_LR = "🚙 Leapmotor B10 Long Range (67.1 kWh netti • 168 kW)"
+AUTO_LEAPMOTOR_B10_LR_COMP = "🚙 Leapmotor B10 Long Range (67.1 kWh • 168 kW)"
+AUTO_LEAPMOTOR_C10_REST = "🚙 Leapmotor C10 Restyling (81.9 kWh • 800V)"
+AUTO_SKODA_ELROQ_85 = "🚙 Škoda Elroq 85 (77 kWh netti • 175 kW)"
 AUTO_PERSONALIZZATA = "⚙️ Altra Auto (Personalizzata)"
 
 AUTO_OPZIONI = [
@@ -210,6 +213,8 @@ AUTO_OPZIONI = [
     AUTO_LEAPMOTOR_B05_LR,
     AUTO_LEAPMOTOR_B10_STD,
     AUTO_LEAPMOTOR_B10_LR,
+    AUTO_LEAPMOTOR_C10_REST,
+    AUTO_SKODA_ELROQ_85,
     AUTO_PERSONALIZZATA,
 ]
 
@@ -314,6 +319,7 @@ UTENTI_FALLBACK_LOCALE = {
     "Stefano": "ev2026",
     "Massimo": "ev2026",
     "Federico": "ev2026",
+    "Raffaele": "ev2026",
 }
 
 
@@ -334,6 +340,13 @@ def opzioni_auto_per_utente(current_user):
         return [AUTO_LEAPMOTOR_B10_STD, AUTO_LEAPMOTOR_B10_LR, AUTO_PERSONALIZZATA]
     if utente_low == "federico":
         return [AUTO_TESLA_M3_LR, AUTO_PERSONALIZZATA]
+    if utente_low == "raffaele":
+        return [
+            AUTO_LEAPMOTOR_C10_REST,
+            AUTO_LEAPMOTOR_B10_LR_COMP,
+            AUTO_SKODA_ELROQ_85,
+            AUTO_PERSONALIZZATA,
+        ]
     return list(AUTO_OPZIONI)
 
 
@@ -1043,6 +1056,24 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "bat_kwh": 67.1,
             "cons_base": 21.5,
             "curva_dc": [(55, 160), (80, 110), (100, 50)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Leapmotor C10" in scelta_auto:
+        return {
+            "nome": "Leapmotor C10 Restyling (81.9 kWh)",
+            "bat_kwh": 78.5,
+            "cons_base": 20.5,
+            "curva_dc": [(50, 210), (80, 145), (100, 60)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Elroq 85" in scelta_auto:
+        return {
+            "nome": "Škoda Elroq 85 (77 kWh)",
+            "bat_kwh": 77.0,
+            "cons_base": 17.8,
+            "curva_dc": [(50, 165), (80, 115), (100, 55)],
             "soc_veloce": 80,
             "is_tesla_car": False,
         }
