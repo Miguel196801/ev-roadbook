@@ -6705,16 +6705,18 @@ with tab_viaggio:
             render_card_confronto_strade(sol_a_dyn, sol_b_dyn, res)
 
         # Roadbook Visivo in SVG vettoriale subito sopra le card delle soste
-        render_roadbook_visivo(sol_a_dyn, res)
+        sol_a_valida = bool(sol_a_dyn and sol_a_dyn.get("valido"))
+        sol_per_mappa = sol_a_dyn if sol_a_valida else sol_b_dyn
+        render_roadbook_visivo(sol_per_mappa, res)
 
         # Scheda espandibile SOLUZIONE A (aperta di default)
-        tempo_a_txt = formatta_durata(sol_a_dyn["tempo_totale_min"]) if sol_a_dyn and sol_a_dyn.get("valido") else "N.D."
+        tempo_a_txt = formatta_durata(sol_a_dyn["tempo_totale_min"]) if sol_a_valida else "N.D."
         desc_a_txt = res.get("desc_a", "Consigliata — Meno tempo/soste")
         titolo_a = f"🟢 SOLUZIONE A ({desc_a_txt}) — Totale: {tempo_a_txt}"
         with st.expander(titolo_a, expanded=True):
             render_riepilogo_soluzione(sol_a_dyn, ctrl_a, res, colore_bordo="#10B981")
 
-        # Scheda espandibile SOLUZIONE B (aperta di default anche in modalità confronto o se personalizzata)
+        # Scheda espandibile SOLUZIONE B (si apre automaticamente se Soluzione A non è valida, in confronto o se personalizzata)
         if sol_b_dyn is not None:
             tempo_b_txt = formatta_durata(sol_b_dyn["tempo_totale_min"]) if sol_b_dyn.get("valido") else "N.D."
             titolo_b = f"🔵 SOLUZIONE B ({res['desc_b']}) — Totale: {tempo_b_txt}"
@@ -6723,8 +6725,15 @@ with tab_viaggio:
                 for item in ctrl_b
                 if item is not None
             )
-            espandi_b = b_modificata or (res.get("strada_codice") == "confronta")
+            espandi_b = (not sol_a_valida) or b_modificata or (res.get("strada_codice") == "confronta")
             with st.expander(titolo_b, expanded=espandi_b):
+                if not sol_a_valida:
+                    st.info(
+                        "ℹ️ **Stai visualizzando la SOLUZIONE B (Tutte le colonnine veloci):** "
+                        "con i filtri restrittivi selezionati per la Soluzione A (es. Solo in Autostrada) "
+                        "non ci sono colonnine sufficienti lungo questa tratta, quindi abbiamo attivato "
+                        "automaticamente l'itinerario alternativo migliore."
+                    )
                 render_riepilogo_soluzione(sol_b_dyn, ctrl_b, res, colore_bordo="#3B82F6")
         else:
             with st.expander("🔵 SOLUZIONE B (Alternativa — Solo Autostrada / Altra opzione) — Non necessaria", expanded=False):
