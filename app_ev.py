@@ -200,6 +200,7 @@ AUTO_LEAPMOTOR_B10_LR = "🚙 Leapmotor B10 Long Range (67.1 kWh netti • 168 k
 AUTO_LEAPMOTOR_B10_LR_COMP = "🚙 Leapmotor B10 Long Range (67.1 kWh • 168 kW)"
 AUTO_LEAPMOTOR_C10_REST = "🚙 Leapmotor C10 Restyling (81.9 kWh • 800V)"
 AUTO_SKODA_ELROQ_85 = "🚙 Škoda Elroq 85 (77 kWh netti • 175 kW)"
+AUTO_VW_ID3_PRO = "🚙 Volkswagen ID.3 Pro (58 kWh netti • 125 kW)"
 AUTO_PERSONALIZZATA = "⚙️ Altra Auto (Personalizzata)"
 
 AUTO_OPZIONI = [
@@ -216,6 +217,7 @@ AUTO_OPZIONI = [
     AUTO_LEAPMOTOR_B10_LR,
     AUTO_LEAPMOTOR_C10_REST,
     AUTO_SKODA_ELROQ_85,
+    AUTO_VW_ID3_PRO,
     AUTO_PERSONALIZZATA,
 ]
 
@@ -321,6 +323,7 @@ UTENTI_FALLBACK_LOCALE = {
     "Massimo": "ev2026",
     "Federico": "ev2026",
     "Raffaele": "ev2026",
+    "Barbara": "ev2026",
 }
 
 
@@ -348,6 +351,8 @@ def opzioni_auto_per_utente(current_user):
             AUTO_SKODA_ELROQ_85,
             AUTO_PERSONALIZZATA,
         ]
+    if utente_low == "barbara":
+        return [AUTO_VW_ID3_PRO, AUTO_PERSONALIZZATA]
     return list(AUTO_OPZIONI)
 
 
@@ -1077,6 +1082,15 @@ def costruisci_profilo_auto(scelta_auto, custom_bat, custom_cons, custom_dc):
             "bat_kwh": 77.0,
             "cons_base": 17.8,
             "curva_dc": [(50, 165), (80, 115), (100, 55)],
+            "soc_veloce": 80,
+            "is_tesla_car": False,
+        }
+    if "Volkswagen ID.3" in scelta_auto:
+        return {
+            "nome": "Volkswagen ID.3 Pro (58 kWh)",
+            "bat_kwh": 58.0,
+            "cons_base": 18.8,
+            "curva_dc": [(50, 118), (80, 85), (100, 42)],
             "soc_veloce": 80,
             "is_tesla_car": False,
         }
